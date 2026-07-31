@@ -146,6 +146,24 @@ input,select,textarea{
 .tag.auction{border-color:var(--gold);color:var(--gold)}
 .tag.bin{border-color:var(--patina);color:var(--patina)}
 .tag.new{background:var(--patina);border-color:var(--patina);color:#fff}
+.tag.sample{border-color:var(--strike);color:var(--strike)}
+.sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
+
+/* Numista reference price sits beside the eBay figure */
+.money .ref{display:block;margin-top:5px;padding-top:4px;border-top:1px solid var(--rule-soft);
+  font-size:11px;color:var(--muted)}
+.money .ref b{font-weight:600;color:var(--ink)}
+.delta{font-family:var(--mono);font-size:11px;display:block;margin-top:1px}
+.delta.under{color:var(--patina)}
+.delta.over{color:var(--strike)}
+
+.npanel{border:1px solid var(--rule);border-radius:2px;background:var(--ground);padding:10px;margin-top:8px}
+.nhit{display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--rule-soft)}
+.nhit:last-child{border-bottom:none}
+.nhit img{width:34px;height:34px;object-fit:contain;background:#fff;border:1px solid var(--rule-soft);flex:none}
+.nhit .t{flex:1;min-width:0;font-size:13px;line-height:1.3}
+.nhit .n{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.quota{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:6px}
 .money{text-align:right;font-family:var(--mono);white-space:nowrap}
 .money .big{font-size:20px;font-weight:600;letter-spacing:-0.02em}
 .money .cur{font-size:12px;color:var(--muted);margin-right:2px;vertical-align:.25em}
@@ -288,6 +306,22 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     </div>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
+    <p class="eyebrow">From Numista</p>
+    <div class="row">
+      <button class="btn" id="nWishBtn">Wish list</button>
+      <button class="btn" id="nCsvBtn">Export file</button>
+    </div>
+    <input type="file" id="nCsvFile" accept=".csv,.txt" style="display:none">
+    <div class="field" style="margin-top:8px">
+      <label for="nQ">Or find a type by name or N#</label>
+      <div class="row">
+        <input id="nQ" placeholder="1916-D mercury dime, or N#12345">
+        <button class="btn" id="nSearchBtn" style="flex:0 0 auto">Find</button>
+      </div>
+    </div>
+    <div id="nPanel"></div>
+
+    <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
     <p class="eyebrow">Backup</p>
     <div class="row">
       <button class="btn" id="exportBtn">Export</button>
@@ -301,6 +335,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <div class="tabs">
         <button class="tab on" id="tabHits">New <span id="hitCount">(0)</span></button>
         <button class="tab" id="tabAll">Everything in range</button>
+        <button class="tab" id="tabCheap">Cheapest per item</button>
       </div>
       <div class="spacer"></div>
       <select id="sortBy" style="width:auto">
@@ -371,6 +406,27 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
           </div>
         </div>
 
+        <p class="eyebrow" style="margin-top:18px">Numista</p>
+        <div class="row field" style="max-width:560px">
+          <div><label for="nKey">API key</label><input id="nKey" type="password" placeholder="your Numista API key"></div>
+          <div><label for="nGrade">Price shown for grade</label>
+            <select id="nGrade">
+              <option value="g">Good</option><option value="vg">Very good</option>
+              <option value="f">Fine</option><option value="vf" selected>Very fine</option>
+              <option value="xf">Extremely fine</option><option value="unc">Uncirculated</option>
+            </select>
+          </div>
+        </div>
+        <div class="row field" style="max-width:560px">
+          <div><label for="nUser">User ID (for the wish list)</label><input id="nUser" placeholder="e.g. 123456"></div>
+          <div><label for="nToken">OAuth token (for the wish list)</label><input id="nToken" type="password" placeholder="optional"></div>
+        </div>
+        <div class="row" style="max-width:280px">
+          <button class="btn" id="nTestBtn">Test key</button>
+        </div>
+        <p class="quota" id="nQuota">0 Numista calls this month</p>
+        <p class="note">The key alone reads the catalogue and prices. The wish list is user data, so Numista requires an OAuth token on top — if you do not have one, use <b>Export file</b> instead: on Numista, export your wish list, then drop the CSV in. Estimates are cached for 30 days to protect your monthly quota.</p>
+
         <p class="eyebrow" style="margin-top:16px">Alerts</p>
         <div class="row" style="max-width:420px">
           <button class="btn" id="notifyBtn">Turn on desktop alerts</button>
@@ -405,13 +461,26 @@ var store = {
 var DEFAULTS = {
   mode:"demo", relay:"", relayKey:"", token:"", proxy:"",
   marketplace:"EBAY_US", currency:"USD", sound:true,
-  watches:[], results:[], calls:0, callDay:""
+  watches:[], results:[], calls:0, callDay:"",
+  nKey:"", nUser:"", nToken:"", nGrade:"vf",
+  nPrices:{}, nCalls:0, nCallMonth:""
 };
 var S;
 try { S = JSON.parse(store.get("lotwatch.v1") || "null") || {}; } catch(e){ S = {}; }
 for (var k in DEFAULTS) if (!(k in S)) S[k] = DEFAULTS[k];
 
 function save(){ store.set("lotwatch.v1", JSON.stringify(S)); }
+
+/* Sample rows saved by an earlier version carried a search URL on the title.
+   Move it out of the way so nothing links to a search results page. */
+S.results.forEach(function(r){
+  var it = r && r.item;
+  if (it && it.url && it.url.indexOf("/sch/i.html") >= 0){
+    it.searchUrl = it.url;
+    it.url = "";
+    it.demo = true;
+  }
+});
 
 var timer = null, running = false, editingId = null, tab = "hits", selected = null;
 
@@ -454,6 +523,17 @@ function countCall(){
 }
 
 /* ---------------- normalising eBay's shape ---------------- */
+/* Browse API item IDs look like "v1|364285193021|0". The middle segment is the
+   legacy item number, which is what /itm/ takes. Used only if eBay ever leaves
+   itemWebUrl out, so a row never links nowhere. */
+function itmUrl(id){
+  if (!id) return "";
+  var m = String(id).match(/\|(\d+)\|/);
+  if (m) return "https://www.ebay.com/itm/" + m[1];
+  if (/^\d+$/.test(String(id))) return "https://www.ebay.com/itm/" + id;
+  return "";
+}
+
 function normalise(it){
   var opts = it.buyingOptions || [];
   var ship = null;
@@ -468,7 +548,7 @@ function normalise(it){
   return {
     id: it.itemId,
     title: it.title || "",
-    url: it.itemWebUrl || "",
+    url: it.itemWebUrl || itmUrl(it.itemId),
     img: (it.image && it.image.imageUrl) || (it.thumbnailImages && it.thumbnailImages[0] && it.thumbnailImages[0].imageUrl) || "",
     price: live,
     currency: (it.price && it.price.currency) || S.currency,
@@ -564,7 +644,9 @@ function fetchDemo(w){
     out.push({
       id: "demo-" + w.id + "-" + Math.random().toString(36).slice(2,9),
       title: (w.q || "sample item") + " — " + DEMO_WORDS[Math.floor(Math.random()*DEMO_WORDS.length)],
-      url: "https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(w.q || ""),
+      demo: true,
+      url: "",
+      searchUrl: "https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(w.q || ""),
       img: "",
       price: price,
       currency: S.currency,
@@ -591,6 +673,227 @@ function search(w){
   }
   if (!S.token) return Promise.reject(new Error("Add your eBay token under Connection & alerts"));
   return fetchDirect(w);
+}
+
+/* ---------------- Numista ---------------- */
+var NUM = "https://api.numista.com/v3";
+var GRADE_ORDER = ["unc","xf","vf","f","vg","g"];
+
+function nMonth(){ return new Date().toISOString().slice(0,7); }
+function nCount(){
+  if (S.nCallMonth !== nMonth()){ S.nCallMonth = nMonth(); S.nCalls = 0; }
+  S.nCalls++;
+  var q = $("nQuota");
+  if (q) q.textContent = S.nCalls + " Numista calls this month";
+}
+
+function nFetch(path){
+  if (!S.nKey) return Promise.reject(new Error("Add your Numista API key under Connection & alerts"));
+  var h = { "Numista-API-Key": S.nKey };
+  if (S.nToken) h["Authorization"] = "Bearer " + S.nToken;
+  nCount();
+  return fetch(NUM + path, { headers: h }).then(function(r){
+    return r.text().then(function(txt){
+      var j = null;
+      try { j = JSON.parse(txt); } catch(e){}
+      if (!r.ok){
+        var msg = (j && (j.error_message || j.message || j.error)) || ("Numista returned " + r.status);
+        throw new Error(msg);
+      }
+      return j;
+    });
+  });
+}
+
+/* N# is how Numista labels a type. Accept "N#12345", "12345" or a Numista URL. */
+function parseNref(s){
+  var m = String(s || "").match(/(?:n#|pieces?|types?)[\/\s]*(\d+)/i);
+  if (m) return m[1];
+  m = String(s || "").trim().match(/^(\d{2,})$/);
+  return m ? m[1] : "";
+}
+
+function nSearch(q){
+  var id = parseNref(q);
+  if (id) return nFetch("/types/" + id).then(function(t){ return [t]; });
+  return nFetch("/types?q=" + encodeURIComponent(q) + "&count=12")
+    .then(function(j){ return (j && j.types) || []; });
+}
+
+/* Numista's price payload has shifted shape between versions, so read it
+   defensively rather than assuming one layout. */
+function nPickPrice(j, grade){
+  if (!j) return null;
+  var list = j.prices || j.price_list || (Array.isArray(j) ? j : null);
+  if (list && list.length){
+    var exact = list.filter(function(p){
+      return String(p.grade || "").toLowerCase() === grade;
+    })[0];
+    var pick = exact || list[Math.floor(list.length/2)];
+    var v = pick && (pick.price != null ? pick.price : pick.value);
+    if (v != null && !isNaN(parseFloat(v))){
+      return { value: parseFloat(v), grade: String(pick.grade || grade).toLowerCase(), exact: !!exact };
+    }
+  }
+  if (j[grade] != null && !isNaN(parseFloat(j[grade]))){
+    return { value: parseFloat(j[grade]), grade: grade, exact: true };
+  }
+  for (var i=0;i<GRADE_ORDER.length;i++){
+    var g = GRADE_ORDER[i];
+    if (j[g] != null && !isNaN(parseFloat(j[g]))){
+      return { value: parseFloat(j[g]), grade: g, exact: false };
+    }
+  }
+  return null;
+}
+
+var MONTH = 30*24*3600*1000;
+function nPrice(typeId, force){
+  if (!typeId) return Promise.resolve(null);
+  var hit = S.nPrices[typeId];
+  if (!force && hit && Date.now() - hit.at < MONTH) return Promise.resolve(hit);
+
+  return nFetch("/types/" + typeId + "/issues")
+    .then(function(issues){
+      var arr = (issues && (issues.issues || issues)) || [];
+      if (!arr.length || !arr[0].id) throw new Error("no issues listed");
+      return nFetch("/types/" + typeId + "/issues/" + arr[0].id +
+                    "/prices?currency=" + S.currency);
+    })
+    .then(function(j){
+      var p = nPickPrice(j, S.nGrade);
+      if (!p) throw new Error("no price for that grade");
+      p.at = Date.now();
+      p.currency = S.currency;
+      S.nPrices[typeId] = p;
+      save();
+      return p;
+    })
+    .catch(function(){
+      // Remember the miss briefly so a priceless type is not re-queried every scan.
+      S.nPrices[typeId] = { value:null, at:Date.now(), currency:S.currency };
+      save();
+      return null;
+    });
+}
+
+function nRefresh(){
+  var ids = S.watches.map(function(w){ return w.numistaId; })
+    .filter(function(id, i, a){ return id && a.indexOf(id) === i; });
+  if (!ids.length) return Promise.resolve(0);
+  var i = 0, done = 0;
+  return new Promise(function(res){
+    (function next(){
+      if (i >= ids.length){ render(); res(done); return; }
+      nPrice(ids[i++]).then(function(p){
+        if (p && p.value != null) done++;
+        setTimeout(next, 400);
+      });
+    })();
+  });
+}
+
+/* Turn a Numista type into a watch. */
+function watchFromType(t, useEstimate){
+  var title = t.title || t.name || ("N#" + t.id);
+  var issuer = (t.issuer && (t.issuer.name || t.issuer)) || "";
+  var years = t.min_year && t.max_year && t.min_year !== t.max_year
+    ? (t.min_year + "-" + t.max_year) : (t.min_year || "");
+  var w = {
+    id: uid(),
+    label: title,
+    q: [issuer, title].filter(Boolean).join(" ").replace(/\s+/g," ").trim(),
+    exclude: "copy, replica, reproduction, tribute",
+    min: 0, max: 0,
+    basis: "total", format: "both", condition: "",
+    every: 15, categoryId: "11116", country: "",
+    numistaId: t.id != null ? String(t.id) : null, numistaYears: years,
+    active: true, lastRun: 0, lastError: ""
+  };
+  S.watches.push(w);
+  if (useEstimate !== false && t.id){
+    nPrice(t.id).then(function(p){
+      if (p && p.value != null && !w.max){ w.max = Math.round(p.value*100)/100; save(); render(); }
+    });
+  }
+  return w;
+}
+
+/* Wish list. Numista treats this as user data, so it needs an OAuth token on
+   top of the key. Endpoint names have moved between versions, so try the
+   documented collection route and the wish-list variant, then give up cleanly. */
+function nWishlist(){
+  if (!S.nUser) return Promise.reject(new Error("Add your Numista user ID first"));
+  if (!S.nToken) return Promise.reject(new Error("The wish list needs an OAuth token. Use Export file instead."));
+  var tries = [
+    "/users/" + S.nUser + "/wish_list",
+    "/users/" + S.nUser + "/collected_items?category=wish_list",
+    "/users/" + S.nUser + "/collected_items"
+  ];
+  var i = 0, lastErr = null;
+  return new Promise(function(res, rej){
+    (function next(){
+      if (i >= tries.length){
+        rej(lastErr || new Error("Numista did not return a wish list"));
+        return;
+      }
+      nFetch(tries[i++]).then(function(j){
+        var items = (j && (j.wish_list || j.collected_items || j.items)) || [];
+        if (!items.length){ lastErr = new Error("That list came back empty"); next(); return; }
+        res(items);
+      }).catch(function(e){ lastErr = e; next(); });
+    })();
+  });
+}
+
+/* Numista CSV export. Column names differ by language and export options, so
+   match on what the header contains rather than an exact string. */
+function parseCsv(text){
+  var rows = [], row = [], cell = "", q = false;
+  for (var i=0;i<text.length;i++){
+    var c = text[i];
+    if (q){
+      if (c === '"' && text[i+1] === '"'){ cell += '"'; i++; }
+      else if (c === '"'){ q = false; }
+      else cell += c;
+    } else if (c === '"'){ q = true; }
+    else if (c === "," || c === ";" || c === "\t"){ row.push(cell); cell = ""; }
+    else if (c === "\n"){ row.push(cell); rows.push(row); row = []; cell = ""; }
+    else if (c !== "\r"){ cell += c; }
+  }
+  if (cell.length || row.length){ row.push(cell); rows.push(row); }
+  return rows.filter(function(r){ return r.some(function(x){ return x.trim().length; }); });
+}
+
+function importNumistaCsv(text){
+  var rows = parseCsv(text);
+  if (rows.length < 2) throw new Error("that file has no rows");
+  var head = rows[0].map(function(h){ return h.toLowerCase().trim(); });
+  function col(){
+    for (var a=0;a<arguments.length;a++){
+      for (var i=0;i<head.length;i++) if (head[i].indexOf(arguments[a]) >= 0) return i;
+    }
+    return -1;
+  }
+  var iN = col("n#", "numista"), iT = col("title", "name", "denomination"),
+      iC = col("issuer", "country");
+  if (iT < 0 && iN < 0) throw new Error("no title or N# column in that file");
+
+  var made = 0;
+  for (var r=1;r<rows.length;r++){
+    var row = rows[r];
+    var title = iT >= 0 ? (row[iT] || "").trim() : "";
+    var nid = iN >= 0 ? parseNref(row[iN]) : "";
+    if (!title && !nid) continue;
+    if (nid && S.watches.some(function(w){ return w.numistaId == nid; })) continue;
+    watchFromType({
+      id: nid ? parseInt(nid,10) : null,
+      title: title || ("N#" + nid),
+      issuer: iC >= 0 ? (row[iC] || "").trim() : ""
+    }, true);
+    made++;
+  }
+  return made;
 }
 
 /* ---------------- matching ---------------- */
@@ -624,6 +927,7 @@ function runWatch(w){
       if (S.results.some(function(x){ return x.key === key; })) return;
       S.results.unshift({
         key: key, watchId: w.id, watchLabel: w.label,
+        numistaId: w.numistaId || null,
         min: num(w.min,0), max: num(w.max,0), basis: w.basis,
         found: Date.now(), seen: false, item: r
       });
@@ -733,10 +1037,39 @@ function gauge(r){
     '</div><div class="lab"><span>' + money(min) + '</span><span>' + money(max) + '</span></div></div>';
 }
 
+var GRADE_NAME = {g:"Good", vg:"Very good", f:"Fine", vf:"Very fine", xf:"Extremely fine", unc:"Unc"};
+
+function refPrice(r, shown){
+  var p = r.numistaId ? S.nPrices[r.numistaId] : null;
+  if (!p || p.value == null) return "";
+  var line = '<span class="ref">Numista <b>' + esc(p.currency || S.currency) + " " +
+    money(p.value) + '</b> · ' + esc(GRADE_NAME[p.grade] || p.grade || "") + "</span>";
+  if (shown == null || !p.value) return line;
+  var d = (shown - p.value) / p.value * 100;
+  var cls = d <= 0 ? "under" : "over";
+  var word = d <= 0 ? "under" : "over";
+  line += '<span class="delta ' + cls + '">' + Math.abs(Math.round(d)) + "% " + word + " book</span>";
+  return line;
+}
+
+/* One row per watch: the cheapest listing currently inside its band. */
+function cheapestPerWatch(list){
+  var best = {};
+  list.forEach(function(r){
+    var v = r.basis === "total" ? r.item.total : r.item.price;
+    if (v == null) return;
+    var cur = best[r.watchId];
+    var cv = cur ? (cur.basis === "total" ? cur.item.total : cur.item.price) : null;
+    if (!cur || v < cv) best[r.watchId] = r;
+  });
+  return Object.keys(best).map(function(k){ return best[k]; });
+}
+
 function renderResults(){
   var list = S.results.slice();
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
   if (selected) list = list.filter(function(r){ return r.watchId === selected; });
+  if (tab === "cheap") list = cheapestPerWatch(list);
 
   var sort = $("sortBy").value;
   list.sort(function(a,b){
@@ -775,8 +1108,17 @@ function renderResults(){
 
     return '<article class="lot' + (r.seen ? "" : " fresh") + '">' +
       (it.img ? '<img src="' + esc(it.img) + '" alt="" loading="lazy">' : '<div class="noimg">no photo</div>') +
-      '<div><h4><a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a></h4>' +
+      '<div><h4>' +
+        (it.url
+          ? '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a>'
+          : esc(it.title)) +
+      '</h4>' +
+      (it.demo
+        ? '<p class="sample">Sample listing — not a real one. <a href="' + esc(it.searchUrl) +
+          '" target="_blank" rel="noopener">Search eBay for this</a></p>'
+        : "") +
       '<div class="tags">' +
+        (it.demo ? '<span class="tag sample">Sample</span>' : "") +
         (r.seen ? "" : '<span class="tag new">New</span>') +
         (auction ? '<span class="tag auction">Auction</span>' : "") +
         (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
@@ -785,7 +1127,8 @@ function renderResults(){
         (it.seller ? '<span class="tag">' + esc(it.seller) + (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</span>' : "") +
       '</div>' + gauge(r) + '</div>' +
       '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
-      '<span class="sub">' + esc(sub.join(" · ")) + '</span></div>' +
+      '<span class="sub">' + esc(sub.join(" · ")) + '</span>' +
+      refPrice(r, shown) + '</div>' +
       '</article>';
   }).join("");
 }
@@ -866,12 +1209,16 @@ $("saveWatchBtn").onclick = saveWatch;
 $("cancelWatchBtn").onclick = closeEditor;
 $("sortBy").onchange = renderResults;
 
-$("tabHits").onclick = function(){
-  tab = "hits"; this.className = "tab on"; $("tabAll").className = "tab"; renderResults();
-};
-$("tabAll").onclick = function(){
-  tab = "all"; this.className = "tab on"; $("tabHits").className = "tab"; renderResults();
-};
+function setTab(which){
+  tab = which;
+  $("tabHits").className = "tab" + (which === "hits" ? " on" : "");
+  $("tabAll").className = "tab" + (which === "all" ? " on" : "");
+  $("tabCheap").className = "tab" + (which === "cheap" ? " on" : "");
+  renderResults();
+}
+$("tabHits").onclick = function(){ setTab("hits"); };
+$("tabAll").onclick = function(){ setTab("all"); };
+$("tabCheap").onclick = function(){ setTab("cheap"); };
 $("clearHitsBtn").onclick = function(){
   S.results.forEach(function(r){ r.seen = true; });
   save(); render();
@@ -942,6 +1289,89 @@ $("modeBtns").onclick = function(ev){
   save(); syncSetup();
 };
 
+/* ---------------- Numista wiring ---------------- */
+function nPanelMsg(html){ $("nPanel").innerHTML = '<div class="npanel">' + html + "</div>"; }
+
+$("nSearchBtn").onclick = function(){
+  var q = $("nQ").value.trim();
+  if (!q){ toast("Type a name or an N# first"); return; }
+  nPanelMsg("Searching Numista…");
+  nSearch(q).then(function(types){
+    if (!types.length){ nPanelMsg("Nothing in the catalogue matched that."); return; }
+    nFound = types;
+    $("nPanel").innerHTML = '<div class="npanel">' + types.map(function(t, i){
+      var img = (t.obverse && t.obverse.thumbnail) || (t.obverse && t.obverse.picture) || "";
+      var issuer = (t.issuer && (t.issuer.name || t.issuer)) || "";
+      var yrs = t.min_year ? (" · " + t.min_year + (t.max_year && t.max_year !== t.min_year ? "-" + t.max_year : "")) : "";
+      return '<div class="nhit">' +
+        (img ? '<img src="' + esc(img) + '" alt="">' : "") +
+        '<div class="t">' + esc(t.title || "") +
+        '<div class="n">N#' + esc(t.id) + " · " + esc(issuer) + esc(yrs) + "</div></div>" +
+        '<button class="btn" data-add="' + i + '">Watch</button></div>';
+    }).join("") + "</div>";
+  }).catch(function(e){ nPanelMsg(esc(e.message)); });
+};
+
+var nFound = [];
+$("nPanel").onclick = function(ev){
+  var b = ev.target.closest("button[data-add]");
+  if (!b) return;
+  var t = nFound[parseInt(b.getAttribute("data-add"), 10)];
+  if (!t) return;
+  var w = watchFromType(t, true);
+  save(); render();
+  toast("Watching " + w.label + " — set a price band if you want one");
+};
+
+$("nWishBtn").onclick = function(){
+  nPanelMsg("Asking Numista for your wish list…");
+  nWishlist().then(function(items){
+    var made = 0;
+    items.forEach(function(it){
+      var t = it.type || it;
+      var id = t.id || it.type_id;
+      if (!id) return;
+      if (S.watches.some(function(w){ return w.numistaId == id; })) return;
+      watchFromType({ id:id, title: t.title || it.title || ("N#" + id), issuer: t.issuer, min_year: t.min_year, max_year: t.max_year }, true);
+      made++;
+    });
+    save(); render();
+    nPanelMsg(made ? ("Added " + made + " watches from your wish list.") : "Everything on that list is already watched.");
+  }).catch(function(e){
+    nPanelMsg(esc(e.message) + "<br><br>Export your wish list from Numista and use <b>Export file</b> instead.");
+  });
+};
+
+$("nCsvBtn").onclick = function(){ $("nCsvFile").click(); };
+$("nCsvFile").onchange = function(ev){
+  var f = ev.target.files[0];
+  if (!f) return;
+  var fr = new FileReader();
+  fr.onload = function(){
+    try {
+      var made = importNumistaCsv(String(fr.result));
+      save(); render();
+      nPanelMsg(made ? ("Added " + made + " watches. Prices are loading.") : "No new rows — those are already watched.");
+    } catch(e){ nPanelMsg("Could not read that file: " + esc(e.message)); }
+  };
+  fr.readAsText(f);
+  ev.target.value = "";
+};
+
+$("nTestBtn").onclick = function(){
+  nFetch("/types?q=denarius&count=1").then(function(){
+    toast("Numista key works");
+  }).catch(function(e){ toast(e.message); });
+};
+
+bindCfg("nKey","nKey"); bindCfg("nUser","nUser"); bindCfg("nToken","nToken");
+$("nGrade").onchange = function(){
+  S.nGrade = $("nGrade").value;
+  S.nPrices = {};        // estimates are per grade, so the cache no longer applies
+  save();
+  nRefresh().then(function(n){ toast(n + " estimates refreshed"); });
+};
+
 function bindCfg(id, key){
   var el = $(id);
   el.onchange = function(){ S[key] = el.value.trim ? el.value.trim() : el.value; save(); };
@@ -972,6 +1402,9 @@ function syncSetup(){
   $("fRelay").value = S.relay; $("fRelayKey").value = S.relayKey;
   $("fToken").value = S.token; $("fProxy").value = S.proxy;
   $("fMarket").value = S.marketplace; $("fCurrency").value = S.currency;
+  $("nKey").value = S.nKey; $("nUser").value = S.nUser;
+  $("nToken").value = S.nToken; $("nGrade").value = S.nGrade;
+  $("nQuota").textContent = (S.nCallMonth === nMonth() ? S.nCalls : 0) + " Numista calls this month";
   $("soundBtn").textContent = "Sound: " + (S.sound ? "on" : "off");
 }
 
