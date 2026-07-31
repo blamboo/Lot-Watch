@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lot Watch — eBay price-band scanner</title>
+<style>
+:root{
+  --ground:#E9ECEE;
+  --card:#F8F9FA;
+  --ink:#181D22;
+  --muted:#6B757E;
+  --rule:#C7CDD2;
+  --rule-soft:#DDE2E5;
+  --patina:#2E6F5E;
+  --patina-soft:#DCE9E4;
+  --strike:#A2451F;
+  --gold:#8A6A21;
+  --mono:ui-monospace,"SFMono-Regular","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;
+}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+a{color:var(--ink)}
+
+/* ---------- masthead ---------- */
+.masthead{
+  border-bottom:1px solid var(--rule);background:var(--card);
+  padding:14px 20px;display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
+  position:sticky;top:0;z-index:20;
+}
+.wordmark{
+  font-family:var(--mono);font-size:19px;font-weight:600;letter-spacing:-0.02em;
+  text-transform:uppercase;
+}
+.wordmark span{color:var(--patina)}
+.tagline{color:var(--muted);font-size:13px;flex:1;min-width:180px}
+.status{
+  font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+  border:1px solid var(--rule);border-radius:2px;padding:4px 9px;background:var(--ground);
+  display:inline-flex;align-items:center;gap:7px;
+}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.status.on{border-color:var(--patina);color:var(--patina)}
+.status.on .dot{background:var(--patina);animation:breathe 2.2s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.25}}
+.budget{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* ---------- layout ---------- */
+.wrap{display:grid;grid-template-columns:330px 1fr;gap:0;align-items:start}
+.rail{
+  border-right:1px solid var(--rule);min-height:calc(100vh - 56px);
+  padding:16px;background:var(--card);
+}
+.main{padding:16px 20px 60px}
+@media(max-width:860px){
+  .wrap{grid-template-columns:1fr}
+  .rail{border-right:none;border-bottom:1px solid var(--rule);min-height:0}
+}
+
+/* ---------- shared bits ---------- */
+.eyebrow{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 8px;display:flex;justify-content:space-between;align-items:center;
+}
+.btn{
+  border:1px solid var(--rule);background:var(--ground);border-radius:2px;
+  padding:6px 11px;cursor:pointer;font-size:13px;
+}
+.btn:hover{border-color:var(--ink)}
+.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,
+summary:focus-visible,a:focus-visible{outline:2px solid var(--patina);outline-offset:2px}
+.btn.primary{background:var(--patina);border-color:var(--patina);color:#fff}
+.btn.primary:hover{background:#255A4C}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted);padding:4px 6px}
+.btn.ghost:hover{color:var(--ink);border-color:var(--rule)}
+.btn.danger:hover{border-color:var(--strike);color:var(--strike)}
+label{display:block;font-size:12px;color:var(--muted);margin:0 0 3px}
+input,select,textarea{
+  width:100%;border:1px solid var(--rule);border-radius:2px;background:#fff;
+  padding:6px 8px;
+}
+.row{display:flex;gap:8px}
+.row>*{flex:1;min-width:0}
+.field{margin-bottom:9px}
+.hint{font-size:12px;color:var(--muted);margin:6px 0 0}
+.empty{
+  border:1px dashed var(--rule);border-radius:2px;padding:18px;color:var(--muted);
+  font-size:14px;text-align:center;
+}
+
+/* ---------- watch cards ---------- */
+.watch{
+  border:1px solid var(--rule);border-left:3px solid var(--rule);border-radius:2px;
+  background:var(--ground);padding:9px 10px;margin-bottom:8px;cursor:pointer;
+}
+.watch.sel{border-left-color:var(--patina);background:#fff}
+.watch.off{opacity:.5}
+.watch h3{margin:0;font-size:14px;font-weight:600;display:flex;gap:6px;align-items:baseline}
+.watch .band{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:2px}
+.watch .meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;
+  display:flex;gap:10px;flex-wrap:wrap}
+.count{
+  font-family:var(--mono);font-size:11px;background:var(--patina);color:#fff;
+  border-radius:9px;padding:1px 6px;margin-left:auto;
+}
+.count.zero{background:var(--rule-soft);color:var(--muted)}
+.err{color:var(--strike);font-size:12px;margin-top:4px}
+
+/* ---------- results ---------- */
+.toolbar{
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  border-bottom:1px solid var(--rule);padding-bottom:10px;margin-bottom:14px;
+}
+.tabs{display:flex;gap:2px}
+.tab{
+  font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+  border:1px solid transparent;border-bottom:2px solid transparent;background:none;
+  padding:5px 9px;cursor:pointer;color:var(--muted);
+}
+.tab.on{color:var(--ink);border-bottom-color:var(--patina)}
+.spacer{flex:1}
+
+.lot{
+  display:grid;grid-template-columns:78px 1fr auto;gap:14px;
+  border-bottom:1px solid var(--rule-soft);padding:13px 0;align-items:start;
+}
+.lot.fresh{animation:land .4s ease-out}
+@keyframes land{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+.lot img{width:78px;height:78px;object-fit:cover;background:var(--rule-soft);border:1px solid var(--rule-soft)}
+.lot .noimg{width:78px;height:78px;background:var(--rule-soft);display:flex;
+  align-items:center;justify-content:center;color:var(--muted);font-family:var(--mono);font-size:10px}
+.lot h4{margin:0 0 4px;font-size:14px;font-weight:600;line-height:1.3}
+.lot h4 a{text-decoration:none}
+.lot h4 a:hover{text-decoration:underline}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin:5px 0 0}
+.tag{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  border:1px solid var(--rule);border-radius:2px;padding:1px 5px;color:var(--muted);
+}
+.tag.auction{border-color:var(--gold);color:var(--gold)}
+.tag.bin{border-color:var(--patina);color:var(--patina)}
+.tag.new{background:var(--patina);border-color:var(--patina);color:#fff}
+.money{text-align:right;font-family:var(--mono);white-space:nowrap}
+.money .big{font-size:20px;font-weight:600;letter-spacing:-0.02em}
+.money .cur{font-size:12px;color:var(--muted);margin-right:2px;vertical-align:.25em}
+.money .sub{font-size:11px;color:var(--muted);display:block;margin-top:1px}
+
+/* signature: where this lot sits inside the watch's price band */
+.gauge{margin-top:8px;max-width:340px}
+.gauge .track{position:relative;height:11px;border-bottom:1px solid var(--rule)}
+.gauge .band{
+  position:absolute;top:3px;height:5px;background:var(--patina-soft);
+  border-left:1px solid var(--patina);border-right:1px solid var(--patina);
+}
+.gauge .tick{position:absolute;top:0;width:1px;height:11px;background:var(--ink)}
+.gauge .tick::after{
+  content:"";position:absolute;left:-2.5px;top:-1px;width:6px;height:6px;
+  background:var(--ink);transform:rotate(45deg);
+}
+.gauge .lab{
+  display:flex;justify-content:space-between;font-family:var(--mono);
+  font-size:10px;color:var(--muted);margin-top:2px;
+}
+
+/* ---------- setup ---------- */
+details.setup{
+  border:1px solid var(--rule);border-radius:2px;background:var(--card);
+  padding:0;margin-top:26px;
+}
+details.setup>summary{
+  cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:12px;
+  text-transform:uppercase;letter-spacing:.1em;
+}
+.setup-body{padding:0 14px 16px;border-top:1px solid var(--rule-soft)}
+.mode{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.mode button{
+  border:1px solid var(--rule);background:var(--ground);border-radius:2px;
+  padding:8px 12px;cursor:pointer;text-align:left;flex:1;min-width:170px;
+}
+.mode button.on{border-color:var(--patina);background:#fff;box-shadow:inset 3px 0 0 var(--patina)}
+.mode b{display:block;font-size:13px}
+.mode small{color:var(--muted);font-size:12px}
+ol.steps{padding-left:18px;margin:10px 0;font-size:13px;color:var(--muted)}
+ol.steps li{margin-bottom:5px}
+ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);padding:1px 4px}
+.note{
+  border-left:3px solid var(--gold);background:#fff;padding:9px 12px;font-size:13px;
+  margin:12px 0;color:var(--muted);
+}
+.toast{
+  position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
+  background:var(--ink);color:#fff;padding:9px 16px;border-radius:2px;
+  font-size:13px;z-index:60;opacity:0;pointer-events:none;transition:opacity .2s;
+}
+.toast.show{opacity:1}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wordmark">Lot<span>/</span>Watch</div>
+  <div class="tagline">Standing eBay searches with a hard price band. Buy It Now and auctions.</div>
+  <div class="status" id="statusPill"><span class="dot"></span><span id="statusText">Stopped</span></div>
+  <div class="budget" id="budget">0 calls today</div>
+  <button class="btn primary" id="scanBtn">Start scanning</button>
+</header>
+
+<div class="wrap">
+
+  <aside class="rail">
+    <p class="eyebrow">Watch list <button class="btn ghost" id="newWatchBtn">+ New</button></p>
+    <div id="watchList"></div>
+
+    <div id="editor" style="display:none">
+      <hr style="border:none;border-top:1px solid var(--rule);margin:14px 0">
+      <p class="eyebrow" id="editorTitle">New watch</p>
+      <div class="field">
+        <label for="fLabel">Name</label>
+        <input id="fLabel" placeholder="1916-D Mercury dime">
+      </div>
+      <div class="field">
+        <label for="fQ">Search words</label>
+        <input id="fQ" placeholder="1916-D mercury dime">
+      </div>
+      <div class="field">
+        <label for="fEx">Skip anything containing</label>
+        <input id="fEx" placeholder="copy, replica, tribute">
+      </div>
+      <div class="row field">
+        <div><label for="fMin">Lowest price</label><input id="fMin" type="number" min="0" step="0.01" value="0"></div>
+        <div><label for="fMax">Highest price</label><input id="fMax" type="number" min="0" step="0.01" value="100"></div>
+      </div>
+      <div class="row field">
+        <div>
+          <label for="fBasis">Price counts as</label>
+          <select id="fBasis">
+            <option value="item">Item price</option>
+            <option value="total">Item + shipping</option>
+          </select>
+        </div>
+        <div>
+          <label for="fFormat">Listing type</label>
+          <select id="fFormat">
+            <option value="both">Both</option>
+            <option value="FIXED_PRICE">Buy It Now</option>
+            <option value="AUCTION">Auction</option>
+          </select>
+        </div>
+      </div>
+      <div class="row field">
+        <div>
+          <label for="fCond">Condition</label>
+          <select id="fCond">
+            <option value="">Any</option>
+            <option value="NEW">New</option>
+            <option value="USED">Used</option>
+          </select>
+        </div>
+        <div>
+          <label for="fEvery">Check every</label>
+          <select id="fEvery">
+            <option value="2">2 min</option>
+            <option value="5" selected>5 min</option>
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">1 hour</option>
+          </select>
+        </div>
+      </div>
+      <div class="row field">
+        <div><label for="fCat">Category ID (optional)</label><input id="fCat" placeholder="11116"></div>
+        <div><label for="fCountry">Seller country</label><input id="fCountry" placeholder="US"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="saveWatchBtn">Save watch</button>
+        <button class="btn" id="cancelWatchBtn">Cancel</button>
+      </div>
+      <p class="hint">Category 11116 is Coins &amp; Paper Money. Leave it blank to search everything.</p>
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
+    <p class="eyebrow">Backup</p>
+    <div class="row">
+      <button class="btn" id="exportBtn">Export</button>
+      <button class="btn" id="importBtn">Import</button>
+    </div>
+    <input type="file" id="importFile" accept=".json" style="display:none">
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="tab on" id="tabHits">New <span id="hitCount">(0)</span></button>
+        <button class="tab" id="tabAll">Everything in range</button>
+      </div>
+      <div class="spacer"></div>
+      <select id="sortBy" style="width:auto">
+        <option value="found">Found most recently</option>
+        <option value="low">Price: low to high</option>
+        <option value="high">Price: high to low</option>
+        <option value="ending">Ending soonest</option>
+      </select>
+      <button class="btn" id="scanNowBtn">Check now</button>
+      <button class="btn ghost" id="clearHitsBtn">Mark all seen</button>
+    </div>
+
+    <div id="results"></div>
+
+    <details class="setup" id="setupPanel">
+      <summary>Connection &amp; alerts</summary>
+      <div class="setup-body">
+        <p class="hint" style="margin-top:12px">Where listings come from:</p>
+        <div class="mode" id="modeBtns">
+          <button data-mode="demo"><b>Sample data</b><small>No setup. Fake listings so you can try the app.</small></button>
+          <button data-mode="relay"><b>Relay (recommended)</b><small>Your Cloudflare worker calls eBay for you.</small></button>
+          <button data-mode="direct"><b>Token + CORS proxy</b><small>Quick test. Token passes through a third party.</small></button>
+        </div>
+
+        <div id="relayCfg" style="display:none">
+          <div class="row field">
+            <div><label for="fRelay">Worker URL</label><input id="fRelay" placeholder="https://ebay-relay.you.workers.dev"></div>
+            <div><label for="fRelayKey">Relay key</label><input id="fRelayKey" type="password" placeholder="the RELAY_KEY secret"></div>
+          </div>
+          <ol class="steps">
+            <li>Get an eBay developer account and a <b>production</b> keyset at developer.ebay.com.</li>
+            <li>Fill in eBay's marketplace account deletion settings — production keys stay locked until you do. Your worker URL answers that check for you.</li>
+            <li>Deploy <code>ebay-relay-worker.js</code> (shipped with this file) at dash.cloudflare.com under Workers.</li>
+            <li>Add the secrets <code>EBAY_APP_ID</code>, <code>EBAY_CERT_ID</code>, <code>RELAY_KEY</code>, and paste the worker URL above.</li>
+          </ol>
+        </div>
+
+        <div id="directCfg" style="display:none">
+          <div class="field">
+            <label for="fToken">eBay application token</label>
+            <input id="fToken" type="password" placeholder="v^1.1#i^1#...">
+          </div>
+          <div class="field">
+            <label for="fProxy">CORS proxy prefix</label>
+            <input id="fProxy" placeholder="https://corsproxy.io/?url=">
+          </div>
+          <p class="note">eBay sends no CORS headers, so the browser cannot call it without something in between. A public proxy sees your token. Use this to test, then move to the relay.</p>
+        </div>
+
+        <div class="row field" style="max-width:420px;margin-top:12px">
+          <div>
+            <label for="fMarket">Marketplace</label>
+            <select id="fMarket">
+              <option value="EBAY_US">eBay US</option>
+              <option value="EBAY_GB">eBay UK</option>
+              <option value="EBAY_DE">eBay Germany</option>
+              <option value="EBAY_AU">eBay Australia</option>
+              <option value="EBAY_CA">eBay Canada</option>
+            </select>
+          </div>
+          <div>
+            <label for="fCurrency">Currency</label>
+            <select id="fCurrency">
+              <option value="USD">USD</option><option value="GBP">GBP</option>
+              <option value="EUR">EUR</option><option value="AUD">AUD</option>
+              <option value="CAD">CAD</option>
+            </select>
+          </div>
+        </div>
+
+        <p class="eyebrow" style="margin-top:16px">Alerts</p>
+        <div class="row" style="max-width:420px">
+          <button class="btn" id="notifyBtn">Turn on desktop alerts</button>
+          <button class="btn" id="soundBtn">Sound: on</button>
+        </div>
+        <p class="note">Alerts only fire while this page is open. Close the tab and scanning stops.</p>
+        <p class="hint">eBay's free tier allows about 5,000 searches a day across everything you run. Ten watches on a 5-minute cycle uses roughly 2,900.</p>
+      </div>
+    </details>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------------- storage ---------------- */
+var mem = {};
+var store = {
+  get: function(k){
+    try { var v = localStorage.getItem(k); return v === null ? mem[k] : v; }
+    catch(e){ return mem[k]; }
+  },
+  set: function(k,v){
+    mem[k] = v;
+    try { localStorage.setItem(k,v); } catch(e){}
+  }
+};
+
+var DEFAULTS = {
+  mode:"demo", relay:"", relayKey:"", token:"", proxy:"",
+  marketplace:"EBAY_US", currency:"USD", sound:true,
+  watches:[], results:[], calls:0, callDay:""
+};
+var S;
+try { S = JSON.parse(store.get("lotwatch.v1") || "null") || {}; } catch(e){ S = {}; }
+for (var k in DEFAULTS) if (!(k in S)) S[k] = DEFAULTS[k];
+
+function save(){ store.set("lotwatch.v1", JSON.stringify(S)); }
+
+var timer = null, running = false, editingId = null, tab = "hits", selected = null;
+
+/* ---------------- small helpers ---------------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function money(n, cur){
+  if (n == null || isNaN(n)) return "—";
+  return Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function uid(){ return "w" + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+function toast(msg){
+  var t = $("toast"); t.textContent = msg; t.className = "toast show";
+  setTimeout(function(){ t.className = "toast"; }, 2600);
+}
+function num(v, fallback){
+  var n = parseFloat(v);
+  return isNaN(n) ? fallback : n;
+}
+function timeLeft(iso){
+  if (!iso) return "";
+  var ms = new Date(iso).getTime() - Date.now();
+  if (isNaN(ms)) return "";
+  if (ms <= 0) return "ended";
+  var m = Math.floor(ms/60000), h = Math.floor(m/60), d = Math.floor(h/24);
+  if (d > 0) return d + "d " + (h%24) + "h left";
+  if (h > 0) return h + "h " + (m%60) + "m left";
+  return m + "m left";
+}
+
+/* ---------------- call budget ---------------- */
+function today(){ return new Date().toISOString().slice(0,10); }
+function countCall(){
+  if (S.callDay !== today()){ S.callDay = today(); S.calls = 0; }
+  S.calls++;
+  $("budget").textContent = S.calls + " calls today";
+}
+
+/* ---------------- normalising eBay's shape ---------------- */
+function normalise(it){
+  var opts = it.buyingOptions || [];
+  var ship = null;
+  if (it.shippingOptions && it.shippingOptions.length){
+    var sc = it.shippingOptions[0].shippingCost;
+    if (sc && sc.value != null) ship = parseFloat(sc.value);
+  }
+  var price = it.price && it.price.value != null ? parseFloat(it.price.value) : null;
+  var bid = it.currentBidPrice && it.currentBidPrice.value != null
+    ? parseFloat(it.currentBidPrice.value) : null;
+  var live = (opts.indexOf("AUCTION") >= 0 && bid != null) ? bid : price;
+  return {
+    id: it.itemId,
+    title: it.title || "",
+    url: it.itemWebUrl || "",
+    img: (it.image && it.image.imageUrl) || (it.thumbnailImages && it.thumbnailImages[0] && it.thumbnailImages[0].imageUrl) || "",
+    price: live,
+    currency: (it.price && it.price.currency) || S.currency,
+    shipping: ship,
+    total: live == null ? null : live + (ship || 0),
+    formats: opts,
+    bids: it.bidCount != null ? it.bidCount : null,
+    endTime: it.itemEndDate || "",
+    condition: it.condition || "",
+    seller: (it.seller && it.seller.username) || "",
+    feedback: (it.seller && it.seller.feedbackPercentage) || "",
+    location: (it.itemLocation && it.itemLocation.country) || ""
+  };
+}
+
+/* ---------------- building the eBay query ---------------- */
+function buildParams(w){
+  var f = [];
+  var min = num(w.min, 0), max = num(w.max, 0);
+  if (max > 0) f.push("price:[" + min + ".." + max + "]");
+  else f.push("price:[" + min + "..]");
+  f.push("priceCurrency:" + S.currency);
+
+  if (w.format === "both") f.push("buyingOptions:{FIXED_PRICE|AUCTION}");
+  else f.push("buyingOptions:{" + w.format + "}");
+
+  if (w.condition) f.push("conditions:{" + w.condition + "}");
+  if (w.country) f.push("itemLocationCountry:" + w.country.toUpperCase());
+
+  var p = new URLSearchParams();
+  if (w.q) p.set("q", w.q);
+  if (w.categoryId) p.set("category_ids", w.categoryId);
+  p.set("filter", f.join(","));
+  p.set("sort", "newlyListed");
+  p.set("limit", "50");
+  return p;
+}
+
+/* ---------------- the three fetch modes ---------------- */
+function fetchRelay(w){
+  var p = buildParams(w);
+  p.set("marketplace", S.marketplace);
+  if (S.relayKey) p.set("key", S.relayKey);
+  var base = S.relay.replace(/\/+$/,"");
+  countCall();
+  return fetch(base + "/search?" + p.toString())
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if (!res.ok) throw new Error(readErr(res.j));
+      return (res.j.itemSummaries || []).map(normalise);
+    });
+}
+
+function fetchDirect(w){
+  var p = buildParams(w);
+  var target = "https://api.ebay.com/buy/browse/v1/item_summary/search?" + p.toString();
+  var url = S.proxy ? S.proxy + encodeURIComponent(target) : target;
+  countCall();
+  return fetch(url, {
+    headers: {
+      "Authorization": "Bearer " + S.token,
+      "X-EBAY-C-MARKETPLACE-ID": S.marketplace
+    }
+  })
+  .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+  .then(function(res){
+    if (!res.ok) throw new Error(readErr(res.j));
+    return (res.j.itemSummaries || []).map(normalise);
+  });
+}
+
+function readErr(j){
+  if (!j) return "eBay returned no body";
+  if (j.errors && j.errors.length) return j.errors[0].message || JSON.stringify(j.errors[0]);
+  if (j.error) return j.error;
+  return "eBay returned an error";
+}
+
+/* demo generator — deterministic enough to look like a real feed */
+var DEMO_WORDS = ["Uncirculated","Toned","Original","Album","Estate","Lot of 3","Certified","Raw","Choice","Problem-free"];
+function fetchDemo(w){
+  var min = num(w.min,0), max = num(w.max,100);
+  var span = Math.max(max - min, 1);
+  var out = [];
+  var n = 3 + Math.floor(Math.random()*5);
+  for (var i=0;i<n;i++){
+    var auction = Math.random() < 0.45;
+    var inBand = Math.random() < 0.7;
+    var price = inBand
+      ? min + Math.random()*span
+      : (Math.random() < 0.5 ? Math.max(0, min - Math.random()*span*0.6) : max + Math.random()*span*0.8);
+    price = Math.round(price*100)/100;
+    out.push({
+      id: "demo-" + w.id + "-" + Math.random().toString(36).slice(2,9),
+      title: (w.q || "sample item") + " — " + DEMO_WORDS[Math.floor(Math.random()*DEMO_WORDS.length)],
+      url: "https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(w.q || ""),
+      img: "",
+      price: price,
+      currency: S.currency,
+      shipping: Math.round(Math.random()*800)/100,
+      total: null,
+      formats: auction ? ["AUCTION"] : ["FIXED_PRICE"],
+      bids: auction ? Math.floor(Math.random()*14) : null,
+      endTime: auction ? new Date(Date.now() + Math.random()*4*86400000).toISOString() : "",
+      condition: Math.random() < 0.5 ? "Used" : "Ungraded",
+      seller: "sample_seller",
+      feedback: "99.4",
+      location: "US"
+    });
+  }
+  out.forEach(function(o){ o.total = o.price + (o.shipping || 0); });
+  return new Promise(function(res){ setTimeout(function(){ res(out); }, 250); });
+}
+
+function search(w){
+  if (S.mode === "demo") return fetchDemo(w);
+  if (S.mode === "relay"){
+    if (!S.relay) return Promise.reject(new Error("Add your worker URL under Connection & alerts"));
+    return fetchRelay(w);
+  }
+  if (!S.token) return Promise.reject(new Error("Add your eBay token under Connection & alerts"));
+  return fetchDirect(w);
+}
+
+/* ---------------- matching ---------------- */
+function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
+
+function matches(w, r){
+  var v = priceOf(w, r);
+  if (v == null) return false;
+  var min = num(w.min, 0), max = num(w.max, 0);
+  if (v < min) return false;
+  if (max > 0 && v > max) return false;
+  if (w.format !== "both" && r.formats.indexOf(w.format) < 0) return false;
+  if (w.exclude){
+    var bad = w.exclude.split(",").map(function(s){ return s.trim().toLowerCase(); })
+      .filter(function(s){ return s.length; });
+    var t = r.title.toLowerCase();
+    for (var i=0;i<bad.length;i++) if (t.indexOf(bad[i]) >= 0) return false;
+  }
+  return true;
+}
+
+/* ---------------- scanning ---------------- */
+function runWatch(w){
+  return search(w).then(function(items){
+    w.lastRun = Date.now();
+    w.lastError = "";
+    var fresh = 0;
+    items.forEach(function(r){
+      if (!matches(w, r)) return;
+      var key = w.id + "|" + r.id;
+      if (S.results.some(function(x){ return x.key === key; })) return;
+      S.results.unshift({
+        key: key, watchId: w.id, watchLabel: w.label,
+        min: num(w.min,0), max: num(w.max,0), basis: w.basis,
+        found: Date.now(), seen: false, item: r
+      });
+      fresh++;
+    });
+    if (S.results.length > 600) S.results.length = 600;
+    if (fresh) alertNew(w, fresh);
+    return fresh;
+  }).catch(function(err){
+    w.lastRun = Date.now();
+    w.lastError = err && err.message ? err.message : String(err);
+    return 0;
+  });
+}
+
+function tick(){
+  var now = Date.now();
+  var due = S.watches.filter(function(w){
+    return w.active !== false && (!w.lastRun || now - w.lastRun >= w.every*60000);
+  });
+  if (!due.length) return;
+  // one at a time, spaced out, so a burst of watches does not hammer the API
+  var i = 0;
+  (function next(){
+    if (i >= due.length){ save(); render(); return; }
+    runWatch(due[i++]).then(function(){
+      renderWatches();
+      setTimeout(next, 1200);
+    });
+  })();
+}
+
+function setRunning(on){
+  running = on;
+  if (timer){ clearInterval(timer); timer = null; }
+  if (on){
+    timer = setInterval(tick, 20000);
+    tick();
+  }
+  $("statusPill").className = "status" + (on ? " on" : "");
+  $("statusText").textContent = on ? "Scanning" : "Stopped";
+  $("scanBtn").textContent = on ? "Stop scanning" : "Start scanning";
+}
+
+/* ---------------- alerts ---------------- */
+var audioCtx = null;
+function beep(){
+  if (!S.sound) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "sine"; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.36);
+  } catch(e){}
+}
+function alertNew(w, n){
+  beep();
+  var msg = n + (n === 1 ? " listing" : " listings") + " in range for " + w.label;
+  try {
+    if (window.Notification && Notification.permission === "granted"){
+      new Notification("Lot Watch", { body: msg });
+    }
+  } catch(e){}
+  toast(msg);
+}
+
+/* ---------------- rendering ---------------- */
+function renderWatches(){
+  var el = $("watchList");
+  if (!S.watches.length){
+    el.innerHTML = '<div class="empty">No watches yet. Add one to start scanning.</div>';
+    return;
+  }
+  el.innerHTML = S.watches.map(function(w){
+    var unseen = S.results.filter(function(r){ return r.watchId === w.id && !r.seen; }).length;
+    var max = num(w.max,0);
+    var band = S.currency + " " + money(num(w.min,0)) + " – " + (max > 0 ? money(max) : "any");
+    var fmt = w.format === "both" ? "BIN + auction" : (w.format === "AUCTION" ? "Auction" : "Buy It Now");
+    var last = w.lastRun ? new Date(w.lastRun).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "never";
+    return '<div class="watch' + (selected === w.id ? " sel" : "") + (w.active === false ? " off" : "") +
+      '" data-watch="' + w.id + '">' +
+      '<h3>' + esc(w.label) + '<span class="count' + (unseen ? "" : " zero") + '">' + unseen + '</span></h3>' +
+      '<div class="band">' + esc(band) + '</div>' +
+      '<div class="meta"><span>' + fmt + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
+      (w.lastError ? '<div class="err">' + esc(w.lastError) + '</div>' : "") +
+      '<div class="row" style="margin-top:6px">' +
+        '<button class="btn ghost" data-act="toggle" data-id="' + w.id + '">' + (w.active === false ? "Resume" : "Pause") + '</button>' +
+        '<button class="btn ghost" data-act="edit" data-id="' + w.id + '">Edit</button>' +
+        '<button class="btn ghost danger" data-act="del" data-id="' + w.id + '">Delete</button>' +
+      '</div></div>';
+  }).join("");
+}
+
+function gauge(r){
+  var v = r.basis === "total" ? r.item.total : r.item.price;
+  var min = r.min, max = r.max > 0 ? r.max : Math.max(v, min) * 1.2;
+  var pad = (max - min) * 0.18 || 1;
+  var lo = min - pad, hi = max + pad;
+  var pct = function(x){ return Math.max(0, Math.min(100, ((x - lo) / (hi - lo)) * 100)); };
+  return '<div class="gauge"><div class="track">' +
+    '<div class="band" style="left:' + pct(min) + '%;width:' + (pct(max) - pct(min)) + '%"></div>' +
+    '<div class="tick" style="left:' + pct(v) + '%"></div>' +
+    '</div><div class="lab"><span>' + money(min) + '</span><span>' + money(max) + '</span></div></div>';
+}
+
+function renderResults(){
+  var list = S.results.slice();
+  if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
+  if (selected) list = list.filter(function(r){ return r.watchId === selected; });
+
+  var sort = $("sortBy").value;
+  list.sort(function(a,b){
+    var pa = a.basis === "total" ? a.item.total : a.item.price;
+    var pb = b.basis === "total" ? b.item.total : b.item.price;
+    if (sort === "low") return pa - pb;
+    if (sort === "high") return pb - pa;
+    if (sort === "ending"){
+      var ta = a.item.endTime ? new Date(a.item.endTime).getTime() : Infinity;
+      var tb = b.item.endTime ? new Date(b.item.endTime).getTime() : Infinity;
+      return ta - tb;
+    }
+    return b.found - a.found;
+  });
+
+  var el = $("results");
+  if (!list.length){
+    el.innerHTML = '<div class="empty">' +
+      (S.watches.length
+        ? (tab === "hits" ? "Nothing new. Scanning continues in the background." : "No listings inside your price band yet.")
+        : "Add a watch on the left, then press Start scanning.") +
+      '</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(function(r){
+    var it = r.item;
+    var auction = it.formats.indexOf("AUCTION") >= 0;
+    var bin = it.formats.indexOf("FIXED_PRICE") >= 0;
+    var shown = r.basis === "total" ? it.total : it.price;
+    var sub = [];
+    if (it.shipping != null) sub.push(it.shipping === 0 ? "free shipping" : "+ " + money(it.shipping) + " shipping");
+    if (auction && it.bids != null) sub.push(it.bids + (it.bids === 1 ? " bid" : " bids"));
+    var left = timeLeft(it.endTime);
+    if (left) sub.push(left);
+
+    return '<article class="lot' + (r.seen ? "" : " fresh") + '">' +
+      (it.img ? '<img src="' + esc(it.img) + '" alt="" loading="lazy">' : '<div class="noimg">no photo</div>') +
+      '<div><h4><a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a></h4>' +
+      '<div class="tags">' +
+        (r.seen ? "" : '<span class="tag new">New</span>') +
+        (auction ? '<span class="tag auction">Auction</span>' : "") +
+        (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
+        (it.condition ? '<span class="tag">' + esc(it.condition) + '</span>' : "") +
+        '<span class="tag">' + esc(r.watchLabel) + '</span>' +
+        (it.seller ? '<span class="tag">' + esc(it.seller) + (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</span>' : "") +
+      '</div>' + gauge(r) + '</div>' +
+      '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
+      '<span class="sub">' + esc(sub.join(" · ")) + '</span></div>' +
+      '</article>';
+  }).join("");
+}
+
+function render(){
+  renderWatches();
+  renderResults();
+  $("hitCount").textContent = "(" + S.results.filter(function(r){ return !r.seen; }).length + ")";
+  $("budget").textContent = (S.callDay === today() ? S.calls : 0) + " calls today";
+}
+
+/* ---------------- watch editor ---------------- */
+function openEditor(w){
+  editingId = w ? w.id : null;
+  $("editorTitle").textContent = w ? "Edit watch" : "New watch";
+  $("fLabel").value = w ? w.label : "";
+  $("fQ").value = w ? w.q : "";
+  $("fEx").value = w ? (w.exclude || "") : "";
+  $("fMin").value = w ? w.min : 0;
+  $("fMax").value = w ? w.max : 100;
+  $("fBasis").value = w ? w.basis : "item";
+  $("fFormat").value = w ? w.format : "both";
+  $("fCond").value = w ? (w.condition || "") : "";
+  $("fEvery").value = w ? String(w.every) : "5";
+  $("fCat").value = w ? (w.categoryId || "") : "";
+  $("fCountry").value = w ? (w.country || "") : "";
+  $("editor").style.display = "block";
+  $("fLabel").focus();
+}
+function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
+
+function saveWatch(){
+  var q = $("fQ").value.trim();
+  var label = $("fLabel").value.trim() || q;
+  if (!q && !$("fCat").value.trim()){
+    toast("Add search words or a category ID");
+    return;
+  }
+  var w = {
+    id: editingId || uid(),
+    label: label, q: q,
+    exclude: $("fEx").value.trim(),
+    min: num($("fMin").value, 0),
+    max: num($("fMax").value, 0),
+    basis: $("fBasis").value,
+    format: $("fFormat").value,
+    condition: $("fCond").value,
+    every: parseInt($("fEvery").value, 10),
+    categoryId: $("fCat").value.trim(),
+    country: $("fCountry").value.trim(),
+    active: true, lastRun: 0, lastError: ""
+  };
+  if (editingId){
+    for (var i=0;i<S.watches.length;i++){
+      if (S.watches[i].id === editingId){
+        w.lastRun = S.watches[i].lastRun;
+        w.active = S.watches[i].active;
+        S.watches[i] = w;
+      }
+    }
+  } else {
+    S.watches.push(w);
+  }
+  save(); closeEditor(); render();
+  if (running) runWatch(w).then(function(){ save(); render(); });
+}
+
+/* ---------------- wiring ---------------- */
+$("scanBtn").onclick = function(){ setRunning(!running); };
+$("scanNowBtn").onclick = function(){
+  if (!S.watches.length){ toast("Add a watch first"); return; }
+  toast("Checking now");
+  S.watches.forEach(function(w){ w.lastRun = 0; });
+  tick();
+};
+$("newWatchBtn").onclick = function(){ openEditor(null); };
+$("saveWatchBtn").onclick = saveWatch;
+$("cancelWatchBtn").onclick = closeEditor;
+$("sortBy").onchange = renderResults;
+
+$("tabHits").onclick = function(){
+  tab = "hits"; this.className = "tab on"; $("tabAll").className = "tab"; renderResults();
+};
+$("tabAll").onclick = function(){
+  tab = "all"; this.className = "tab on"; $("tabHits").className = "tab"; renderResults();
+};
+$("clearHitsBtn").onclick = function(){
+  S.results.forEach(function(r){ r.seen = true; });
+  save(); render();
+};
+
+$("watchList").onclick = function(ev){
+  var b = ev.target.closest("button[data-act]");
+  if (b){
+    ev.stopPropagation();
+    var id = b.getAttribute("data-id");
+    var w = S.watches.filter(function(x){ return x.id === id; })[0];
+    if (!w) return;
+    var act = b.getAttribute("data-act");
+    if (act === "edit") openEditor(w);
+    if (act === "toggle"){ w.active = w.active === false; save(); render(); }
+    if (act === "del"){
+      S.watches = S.watches.filter(function(x){ return x.id !== id; });
+      S.results = S.results.filter(function(r){ return r.watchId !== id; });
+      if (selected === id) selected = null;
+      save(); render();
+    }
+    return;
+  }
+  var card = ev.target.closest("[data-watch]");
+  if (card){
+    var wid = card.getAttribute("data-watch");
+    selected = selected === wid ? null : wid;
+    render();
+  }
+};
+
+$("exportBtn").onclick = function(){
+  var blob = new Blob([JSON.stringify({ lotwatch:1, watches:S.watches, settings:{
+    mode:S.mode, relay:S.relay, marketplace:S.marketplace, currency:S.currency
+  }}, null, 2)], {type:"application/json"});
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "lot-watch-backup.json";
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+};
+$("importBtn").onclick = function(){ $("importFile").click(); };
+$("importFile").onchange = function(ev){
+  var f = ev.target.files[0];
+  if (!f) return;
+  var fr = new FileReader();
+  fr.onload = function(){
+    try {
+      var d = JSON.parse(fr.result);
+      if (!d.watches) throw new Error("no watches in that file");
+      S.watches = d.watches;
+      if (d.settings){
+        S.marketplace = d.settings.marketplace || S.marketplace;
+        S.currency = d.settings.currency || S.currency;
+      }
+      save(); render(); syncSetup();
+      toast("Imported " + d.watches.length + " watches");
+    } catch(e){ toast("Could not read that file"); }
+  };
+  fr.readAsText(f);
+  ev.target.value = "";
+};
+
+$("modeBtns").onclick = function(ev){
+  var b = ev.target.closest("button[data-mode]");
+  if (!b) return;
+  S.mode = b.getAttribute("data-mode");
+  save(); syncSetup();
+};
+
+function bindCfg(id, key){
+  var el = $(id);
+  el.onchange = function(){ S[key] = el.value.trim ? el.value.trim() : el.value; save(); };
+}
+bindCfg("fRelay","relay"); bindCfg("fRelayKey","relayKey");
+bindCfg("fToken","token"); bindCfg("fProxy","proxy");
+bindCfg("fMarket","marketplace"); bindCfg("fCurrency","currency");
+
+$("notifyBtn").onclick = function(){
+  if (!window.Notification){ toast("This browser has no desktop alerts"); return; }
+  Notification.requestPermission().then(function(p){
+    toast(p === "granted" ? "Desktop alerts are on" : "Desktop alerts stayed off");
+  });
+};
+$("soundBtn").onclick = function(){
+  S.sound = !S.sound; save();
+  $("soundBtn").textContent = "Sound: " + (S.sound ? "on" : "off");
+  if (S.sound) beep();
+};
+
+function syncSetup(){
+  var btns = $("modeBtns").querySelectorAll("button");
+  for (var i=0;i<btns.length;i++){
+    btns[i].className = btns[i].getAttribute("data-mode") === S.mode ? "on" : "";
+  }
+  $("relayCfg").style.display = S.mode === "relay" ? "block" : "none";
+  $("directCfg").style.display = S.mode === "direct" ? "block" : "none";
+  $("fRelay").value = S.relay; $("fRelayKey").value = S.relayKey;
+  $("fToken").value = S.token; $("fProxy").value = S.proxy;
+  $("fMarket").value = S.marketplace; $("fCurrency").value = S.currency;
+  $("soundBtn").textContent = "Sound: " + (S.sound ? "on" : "off");
+}
+
+window.addEventListener("beforeunload", save);
+
+syncSetup();
+render();
+if (S.mode === "demo" && !S.watches.length) $("setupPanel").open = false;
+
+})();
+</script>
+</body>
+</html>
