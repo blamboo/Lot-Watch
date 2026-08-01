@@ -152,6 +152,7 @@ input,select,textarea{
 .tag.new{background:var(--patina);border-color:var(--patina);color:#fff}
 .tag.sample{border-color:var(--strike);color:var(--strike)}
 .tag.noship{border-color:var(--gold);color:var(--gold)}
+.tag.partial{border-color:var(--muted);color:var(--muted);font-style:italic}
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
@@ -253,6 +254,15 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <div class="field">
         <label for="fQ">Search words</label>
         <input id="fQ" placeholder="1916-D mercury dime">
+      </div>
+      <div class="field">
+        <label for="fMatch">How to match</label>
+        <select id="fMatch">
+          <option value="smart">Smart — drop dates, ordinals, filler</option>
+          <option value="all">Exact — every word must appear</option>
+          <option value="any">Broad — any of these words</option>
+        </select>
+        <p class="hint" id="qPreview" style="margin:5px 0 0"></p>
       </div>
       <div class="field">
         <label for="fEx">Skip anything containing</label>
@@ -372,6 +382,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <option value="low">Price: low to high</option>
         <option value="high">Price: high to low</option>
         <option value="ending">Ending soonest</option>
+        <option value="match">Closest match</option>
       </select>
       <button class="btn" id="scanNowBtn">Check now</button>
       <button class="btn ghost" id="clearHitsBtn">Mark all seen</button>
@@ -647,7 +658,100 @@ function normalise(it){
 }
 
 /* ---------------- building the eBay query ---------------- */
-function buildParams(w){
+/* ---------------- keyword handling ---------------- */
+/* eBay's q is an AND across every word, so a catalogue-style description
+   ("Double Parisis - Philippe VI 2nd type 1341 1342") fails against a real
+   listing title that names the reign instead of the variety. Send eBay only
+   the distinctive words; keep the rest for ranking. */
+
+var STOPWORDS = ("the a an of and or for with in on at from type types variety var " +
+  "coin coins piece pieces issue issues struck series obverse reverse km n " +
+  "no nr ref cat catalog catalogue").split(" ");
+var ORDINALS = ("1st 2nd 3rd 4th 5th 6th 7th 8th 9th 10th first second third fourth " +
+  "fifth sixth seventh eighth ninth tenth").split(" ");
+var ROMAN = /^(?:i{1,3}|iv|vi{0,3}|ix|xi{0,3}|xiv|xv|xvi{0,3})$/;
+
+/* Lowercase, strip accents and punctuation, split into words. */
+function tokenize(s){
+  var t = String(s || "");
+  if (t.normalize) t = t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return t.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function isYear(t){ return /^\d{4}$/.test(t) && +t >= 1000 && +t <= 2100; }
+
+/* Split a search phrase into words worth keeping and words that only narrow.
+   Roman numerals stay — "Philippe VI" needs them. Years are kept separate
+   because for a US coin the date IS the identity ("1916-D mercury dime"),
+   while for a catalogue variety it is often absent from the seller's title. */
+function splitTerms(q){
+  var toks = tokenize(q);
+  var core = [], years = [], filler = [];
+  toks.forEach(function(t){
+    if (t.length < 2 && !/^\d$/.test(t)) return;
+    if (STOPWORDS.indexOf(t) >= 0 || ORDINALS.indexOf(t) >= 0){ filler.push(t); return; }
+    if (isYear(t)){ years.push(t); return; }
+    if (ROMAN.test(t)){ core.push(t); return; }
+    if (/^\d+$/.test(t)){ filler.push(t); return; }
+    core.push(t);
+  });
+  if (!core.length && !years.length) core = toks.slice();
+  return { core: core, years: years, filler: filler, all: toks };
+}
+
+/* Queries from precise to broad. A watch climbs this ladder only when the
+   tighter query returns nothing, then remembers where it succeeded — so the
+   steady-state cost stays one call per check. */
+function queryTiers(q){
+  var raw = String(q || "").trim();
+  if (!raw) return [""];
+  var t = splitTerms(raw);
+  var tiers = [raw];
+  var noFiller = t.core.concat(t.years).join(" ");
+  if (noFiller && noFiller !== raw.toLowerCase()) tiers.push(noFiller);
+  // A single year is almost always the coin's own date and must not be
+  // dropped — "1916-D mercury dime" without 1916 is a different coin. Two or
+  // more years signal a reign or variety range the seller may not have typed.
+  if (t.years.length > 1 && t.core.length){
+    var coreOnly = t.core.join(" ");
+    if (tiers.indexOf(coreOnly) < 0) tiers.push(coreOnly);
+  }
+  return tiers;
+}
+
+/* The words sent to eBay for a given watch and tier. */
+function queryFor(w, tier){
+  var raw = String(w.q || "").trim();
+  if (!raw) return "";
+  var mode = w.match || "smart";
+  if (mode === "all") return raw;
+  if (mode === "any"){
+    var t = splitTerms(raw);
+    return "(" + t.core.concat(t.years).join(",") + ")";
+  }
+  var tiers = queryTiers(raw);
+  var i = tier == null ? (w.tier || 0) : tier;
+  return tiers[Math.min(i, tiers.length - 1)];
+}
+function tierCount(w){
+  if ((w.match || "smart") !== "smart") return 1;
+  return queryTiers(w.q).length;
+}
+
+/* How well a title answers the full phrase — used for ranking, never to reject. */
+function termScore(title, q){
+  var t = splitTerms(q);
+  var words = tokenize(title);
+  var have = function(x){ return words.indexOf(x) >= 0; };
+  var hitCore = t.core.filter(have).length;
+  var rest = t.years.concat(t.filler);
+  var hitRest = rest.filter(have).length;
+  var denom = t.core.length * 2 + rest.length;
+  if (!denom) return 0;
+  return (hitCore * 2 + hitRest) / denom;
+}
+
+function buildParams(w, tier){
   var f = [];
   var min = num(w.min, 0), max = num(w.max, 0);
   if (max > 0) f.push("price:[" + min + ".." + max + "]");
@@ -661,10 +765,14 @@ function buildParams(w){
   if (w.country) f.push("itemLocationCountry:" + w.country.toUpperCase());
 
   var p = new URLSearchParams();
-  if (w.q) p.set("q", w.q);
+  var q = queryFor(w, tier);
+  if (q) p.set("q", q);
   if (w.categoryId) p.set("category_ids", w.categoryId);
   p.set("filter", f.join(","));
-  p.set("sort", "newlyListed");
+  // "Any word" leans on eBay's relevance ranking; the other modes are already
+  // narrow, so newest-first is more useful there.
+  p.set("sort", (w.match === "any") ? "" : "newlyListed");
+  if (!p.get("sort")) p.delete("sort");
   p.set("limit", "50");
   return p;
 }
@@ -695,9 +803,9 @@ function asJson(r, where){
   });
 }
 
-function fetchRelay(w){
+function fetchRelay(w, tier){
   var base = relayBase();
-  var p = buildParams(w);
+  var p = buildParams(w, tier);
   p.set("marketplace", S.marketplace);
   if (S.relayKey) p.set("key", S.relayKey);
   countCall();
@@ -716,8 +824,8 @@ function fetchRelay(w){
     });
 }
 
-function fetchDirect(w){
-  var p = buildParams(w);
+function fetchDirect(w, tier){
+  var p = buildParams(w, tier);
   var target = "https://api.ebay.com/buy/browse/v1/item_summary/search?" + p.toString();
   var url = S.proxy ? S.proxy + encodeURIComponent(target) : target;
   countCall();
@@ -783,14 +891,39 @@ function fetchDemo(w){
   return new Promise(function(res){ setTimeout(function(){ res(out); }, 250); });
 }
 
-function search(w){
+function search(w, tier){
   if (S.mode === "demo") return fetchDemo(w);
   if (S.mode === "relay"){
     if (!S.relay) return Promise.reject(new Error("Add your worker URL under Connection & alerts"));
-    return fetchRelay(w);
+    return fetchRelay(w, tier);
   }
   if (!S.token) return Promise.reject(new Error("Add your eBay token under Connection & alerts"));
-  return fetchDirect(w);
+  return fetchDirect(w, tier);
+}
+
+/* Try the precise query first and broaden only if it comes back empty, then
+   remember the tier that worked so later checks cost one call. */
+function searchLadder(w){
+  var tiers = tierCount(w);
+  var start = Math.min(w.tier || 0, tiers - 1);
+  return new Promise(function(resolve, reject){
+    var i = start;
+    (function attempt(){
+      search(w, i).then(function(items){
+        if (items.length || i >= tiers - 1){
+          if (items.length && w.tier !== i){ w.tier = i; }
+          if (!items.length && start > 0){
+            // Nothing at any tier; next check starts wide rather than narrow.
+            w.tier = 0;
+          }
+          resolve(items);
+          return;
+        }
+        i++;
+        attempt();
+      }).catch(reject);
+    })();
+  });
 }
 
 /* ---------------- Numista ---------------- */
@@ -1081,7 +1214,7 @@ function matches(w, r){
 
 /* ---------------- scanning ---------------- */
 function runWatch(w){
-  return search(w).then(function(items){
+  return searchLadder(w).then(function(items){
     w.lastRun = Date.now();
     w.lastError = "";
     var fresh = 0;
@@ -1092,6 +1225,7 @@ function runWatch(w){
       S.results.unshift({
         key: key, watchId: w.id, watchLabel: w.label,
         numistaId: w.numistaId || null,
+        score: termScore(r.title, w.q),
         min: num(w.min,0), max: num(w.max,0), basis: w.basis,
         found: Date.now(), seen: false, item: r
       });
@@ -1256,6 +1390,7 @@ function renderResults(){
     var pb = (b.basis === "total" && b.item.total != null) ? b.item.total : b.item.price;
     if (sort === "low") return pa - pb;
     if (sort === "high") return pb - pa;
+    if (sort === "match") return (b.score || 0) - (a.score || 0);
     if (sort === "ending"){
       var ta = a.item.endTime ? new Date(a.item.endTime).getTime() : Infinity;
       var tb = b.item.endTime ? new Date(b.item.endTime).getTime() : Infinity;
@@ -1307,6 +1442,8 @@ function renderResults(){
       '<div class="tags">' +
         (it.demo ? '<span class="tag sample">Sample</span>' : "") +
         (it.shipKnown === false ? '<span class="tag noship">Shipping TBD</span>' : "") +
+        (r.score != null && r.score < 0.75
+          ? '<span class="tag partial">Partial match</span>' : "") +
         (r.seen ? "" : '<span class="tag new">New</span>') +
         (auction ? '<span class="tag auction">Auction</span>' : "") +
         (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
@@ -1339,6 +1476,7 @@ function openEditor(w){
   $("editorTitle").textContent = w ? "Edit watch" : "New watch";
   $("fLabel").value = w ? w.label : "";
   $("fQ").value = w ? w.q : "";
+  $("fMatch").value = (w && w.match) ? w.match : "smart";
   $("fEx").value = w ? (w.exclude || "") : "";
   $("fMin").value = w ? w.min : 0;
   $("fMax").value = (w && num(w.max,0) > 0) ? w.max : "";
@@ -1354,6 +1492,7 @@ function openEditor(w){
   $("fCountry").value = w ? (w.country || "") : "";
   $("editor").style.display = "block";
   updateBudgetHint();
+  updateQueryPreview();
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
@@ -1372,6 +1511,25 @@ $("fMax").oninput = function(){
     $("fMax").disabled = false;
   }
 };
+
+/* Show exactly what will be sent to eBay, so a search that returns nothing is
+   diagnosable without opening the network tab. */
+function updateQueryPreview(){
+  var raw = $("fQ").value.trim();
+  var el = $("qPreview");
+  if (!raw){ el.textContent = ""; return; }
+  var mode = $("fMatch").value;
+  if (mode === "smart"){
+    var tiers = queryTiers(raw);
+    el.textContent = tiers.length > 1
+      ? "Tries: " + tiers.join("  →  ") + " (stops at the first with results)"
+      : "eBay receives: " + tiers[0];
+  } else {
+    el.textContent = "eBay receives: " + queryFor({ q: raw, match: mode }, 0);
+  }
+}
+$("fQ").oninput = updateQueryPreview;
+$("fMatch").onchange = updateQueryPreview;
 
 /* Show the cost of the interval being chosen, before the save is attempted. */
 function updateBudgetHint(){
@@ -1398,6 +1556,8 @@ function saveWatch(){
   var w = {
     id: editingId || uid(),
     label: label, q: q,
+    match: $("fMatch").value,
+    tier: 0,
     exclude: $("fEx").value.trim(),
     min: num($("fMin").value, 0),
     max: $("fUnlimited").checked ? 0 : num($("fMax").value, 0),
