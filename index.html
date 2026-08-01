@@ -104,6 +104,12 @@ input,select,textarea{
   background:var(--ground);padding:9px 10px;margin-bottom:8px;cursor:pointer;
 }
 .watch.sel{border-left-color:var(--patina);background:#fff}
+.watch.all{border-style:dashed}
+.watch.all h3{font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+#viewing{
+  margin:0 0 12px;font-size:17px;font-weight:600;letter-spacing:-0.01em;
+  padding-bottom:8px;border-bottom:1px solid var(--rule-soft);
+}
 .watch.off{opacity:.5}
 .watch h3{margin:0;font-size:14px;font-weight:600;display:flex;gap:6px;align-items:baseline}
 .watch .band{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:2px}
@@ -393,9 +399,10 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <option value="match">Closest match</option>
       </select>
       <button class="btn" id="scanNowBtn">Check now</button>
-      <button class="btn ghost" id="clearHitsBtn">Mark all seen</button>
+      <button class="btn ghost" id="clearHitsBtn">Mark these seen</button>
     </div>
 
+    <h2 id="viewing"></h2>
     <div id="results"></div>
 
     <details class="setup" id="setupPanel">
@@ -540,6 +547,7 @@ S.results.forEach(function(r){
   }
 });
 
+var ALL = "__all__";
 var timer = null, running = false, editingId = null, tab = "hits", selected = null;
 
 /* ---------------- small helpers ---------------- */
@@ -1318,13 +1326,29 @@ function alertNew(w, n){
 }
 
 /* ---------------- rendering ---------------- */
+/* One watch is in view at a time. Keep the selection pointing at something
+   real, and pick the first watch when there is nothing selected yet. */
+function ensureSelection(){
+  if (!S.watches.length){ selected = null; return; }
+  if (selected === ALL) return;
+  if (!selected || !S.watches.some(function(w){ return w.id === selected; })){
+    selected = S.watches[0].id;
+  }
+}
+
 function renderWatches(){
   var el = $("watchList");
   if (!S.watches.length){
     el.innerHTML = '<div class="empty">No watches yet. Add one to start scanning.</div>';
     return;
   }
-  el.innerHTML = S.watches.map(function(w){
+  var unseenAll = S.results.filter(function(r){ return !r.seen; }).length;
+  el.innerHTML =
+    '<div class="watch all' + (selected === ALL ? " sel" : "") + '" data-watch-all="1">' +
+      '<h3>All watches<span class="count' + (unseenAll ? "" : " zero") + '">' + unseenAll + '</span></h3>' +
+      '<div class="band">' + S.watches.length + (S.watches.length === 1 ? " watch" : " watches") + '</div>' +
+    '</div>' +
+    S.watches.map(function(w){
     var unseen = S.results.filter(function(r){ return r.watchId === w.id && !r.seen; }).length;
     var max = num(w.max,0);
     var band = S.currency + " " + money(num(w.min,0)) + " – " + (max > 0 ? money(max) : "any");
@@ -1394,10 +1418,34 @@ function cheapestPerWatch(list){
   return Object.keys(best).map(function(k){ return best[k]; });
 }
 
+/* Everything the current selection covers, before the New/All tab filter. */
+function inScope(){
+  if (!selected || selected === ALL) return S.results;
+  return S.results.filter(function(r){ return r.watchId === selected; });
+}
+function unseenInScope(){
+  return inScope().filter(function(r){ return !r.seen; }).length;
+}
+
+function renderViewing(){
+  var el = $("viewing");
+  if (!S.watches.length){ el.textContent = ""; el.style.display = "none"; return; }
+  el.style.display = "";
+  if (selected === ALL){
+    el.textContent = "All watches";
+    return;
+  }
+  var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+  el.textContent = w ? w.label : "";
+}
+
 function renderResults(){
+  renderViewing();
   var list = S.results.slice();
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
-  if (selected) list = list.filter(function(r){ return r.watchId === selected; });
+  if (selected && selected !== ALL){
+    list = list.filter(function(r){ return r.watchId === selected; });
+  }
   if (tab === "cheap") list = cheapestPerWatch(list);
 
   var sort = $("sortBy").value;
@@ -1419,7 +1467,9 @@ function renderResults(){
   if (!list.length){
     el.innerHTML = '<div class="empty">' +
       (S.watches.length
-        ? (tab === "hits" ? "Nothing new. Scanning continues in the background." : "No listings inside your price band yet.")
+        ? (tab === "hits"
+            ? "Nothing new for this watch. Pick another on the left, or All watches."
+            : "No listings inside this watch's price band yet.")
         : "Add a watch on the left, then press Start scanning.") +
       '</div>';
     return;
@@ -1477,10 +1527,11 @@ function renderResults(){
 }
 
 function render(){
+  ensureSelection();
   renderWatches();
   renderResults();
   renderClearBtn();
-  $("hitCount").textContent = "(" + S.results.filter(function(r){ return !r.seen; }).length + ")";
+  $("hitCount").textContent = "(" + unseenInScope() + ")";
   var used = (S.callDay === today() ? S.calls : 0);
   var planned = plannedCalls();
   $("budget").textContent = used + " used · " + planned + "/day planned";
@@ -1606,6 +1657,7 @@ function saveWatch(){
   } else {
     S.watches.push(w);
   }
+  selected = w.id;
   save(); closeEditor(); render();
   if (running) runWatch(w).then(function(){ save(); render(); });
 }
@@ -1709,12 +1761,16 @@ $("results").onclick = function(ev){
   var row = b.closest("article");
   if (row) row.className = "lot" + (r.seen ? " done" : "");
   renderWatches();
-  $("hitCount").textContent = "(" + S.results.filter(function(x){ return !x.seen; }).length + ")";
+  $("hitCount").textContent = "(" + unseenInScope() + ")";
 };
 
 $("clearHitsBtn").onclick = function(){
-  S.results.forEach(function(r){ r.seen = true; });
+  // Scoped to the watch in view — clearing hits for watches you cannot see
+  // would silently discard alerts you never looked at.
+  var n = 0;
+  inScope().forEach(function(r){ if (!r.seen){ r.seen = true; n++; } });
   save(); render();
+  toast(n ? ("Marked " + n + " seen") : "Nothing new to mark");
 };
 
 $("watchList").onclick = function(ev){
@@ -1755,10 +1811,15 @@ $("watchList").onclick = function(ev){
     }
     return;
   }
+  var all = ev.target.closest("[data-watch-all]");
+  // ALL, not null — null means "nothing chosen yet" and ensureSelection would
+  // bounce it straight back to the first watch.
+  if (all){ selected = ALL; render(); return; }
   var card = ev.target.closest("[data-watch]");
   if (card){
-    var wid = card.getAttribute("data-watch");
-    selected = selected === wid ? null : wid;
+    // Selecting is not a toggle: one watch is always in view unless "All
+    // watches" is chosen deliberately.
+    selected = card.getAttribute("data-watch");
     render();
   }
 };
