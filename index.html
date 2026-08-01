@@ -365,6 +365,9 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
             <div><label for="fRelay">Worker URL</label><input id="fRelay" placeholder="https://ebay-relay.you.workers.dev"></div>
             <div><label for="fRelayKey">Relay key</label><input id="fRelayKey" type="password" placeholder="the RELAY_KEY secret"></div>
           </div>
+          <div class="row field" style="max-width:280px">
+            <button class="btn" id="relayTestBtn">Test relay</button>
+          </div>
           <ol class="steps">
             <li>Get an eBay developer account and a <b>production</b> keyset at developer.ebay.com.</li>
             <li>Fill in eBay's marketplace account deletion settings — production keys stay locked until you do. Your worker URL answers that check for you.</li>
@@ -588,17 +591,49 @@ function buildParams(w){
 }
 
 /* ---------------- the three fetch modes ---------------- */
+/* A URL typed without a scheme is treated by the browser as a path on this
+   page, so the app fetches itself and gets HTML back. Add the scheme, and
+   strip anything pasted past the host. */
+function relayBase(){
+  var u = String(S.relay || "").trim().replace(/\/+$/,"");
+  if (!u) return "";
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  return u.replace(/\/search$/i, "");
+}
+
+/* Read a reply that is supposed to be JSON, but say something useful when it
+   is not. */
+function asJson(r, where){
+  return r.text().then(function(txt){
+    var j = null;
+    try { j = JSON.parse(txt); } catch(e){
+      if (/^\s*<(!doctype|html)/i.test(txt)){
+        throw new Error(where + " returned a web page instead of data. Check the URL starts with https:// and points at your worker.");
+      }
+      throw new Error(where + " returned something unreadable: " + txt.slice(0,80));
+    }
+    return { ok: r.ok, status: r.status, j: j };
+  });
+}
+
 function fetchRelay(w){
+  var base = relayBase();
   var p = buildParams(w);
   p.set("marketplace", S.marketplace);
   if (S.relayKey) p.set("key", S.relayKey);
-  var base = S.relay.replace(/\/+$/,"");
   countCall();
   return fetch(base + "/search?" + p.toString())
-    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(r){ return asJson(r, "The relay"); })
     .then(function(res){
+      if (res.status === 401) throw new Error("The relay rejected the key. Check RELAY_KEY matches.");
       if (!res.ok) throw new Error(readErr(res.j));
       return (res.j.itemSummaries || []).map(normalise);
+    })
+    .catch(function(e){
+      if (e instanceof TypeError){
+        throw new Error("Could not reach the relay at " + base + ". Check the URL and that the worker is deployed.");
+      }
+      throw e;
     });
 }
 
@@ -613,7 +648,7 @@ function fetchDirect(w){
       "X-EBAY-C-MARKETPLACE-ID": S.marketplace
     }
   })
-  .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+  .then(function(r){ return asJson(r, "eBay"); })
   .then(function(res){
     if (!res.ok) throw new Error(readErr(res.j));
     return (res.j.itemSummaries || []).map(normalise);
@@ -1287,6 +1322,16 @@ $("modeBtns").onclick = function(ev){
   if (!b) return;
   S.mode = b.getAttribute("data-mode");
   save(); syncSetup();
+};
+
+$("relayTestBtn").onclick = function(){
+  if (!S.relay){ toast("Add your worker URL first"); return; }
+  toast("Testing " + relayBase());
+  fetchRelay({ id:"test", q:"coin", min:1, max:5, basis:"item", format:"both" })
+    .then(function(items){
+      toast("Relay works — eBay returned " + items.length + " listings");
+    })
+    .catch(function(e){ toast(e.message); });
 };
 
 /* ---------------- Numista wiring ---------------- */
