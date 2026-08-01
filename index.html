@@ -147,6 +147,7 @@ input,select,textarea{
 .tag.bin{border-color:var(--patina);color:var(--patina)}
 .tag.new{background:var(--patina);border-color:var(--patina);color:#fff}
 .tag.sample{border-color:var(--strike);color:var(--strike)}
+.tag.noship{border-color:var(--gold);color:var(--gold)}
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
@@ -257,14 +258,24 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <div><label for="fMin">Lowest price</label><input id="fMin" type="number" min="0" step="0.01" value="0"></div>
         <div><label for="fMax">Highest price</label><input id="fMax" type="number" min="0" step="0.01" value="100"></div>
       </div>
+      <div class="field" style="margin-bottom:9px">
+        <label for="fBasis">Your price band applies to</label>
+        <select id="fBasis">
+          <option value="total">Delivered price (item + shipping)</option>
+          <option value="item">Item price only</option>
+        </select>
+      </div>
       <div class="row field">
-        <div>
-          <label for="fBasis">Price counts as</label>
-          <select id="fBasis">
-            <option value="item">Item price</option>
-            <option value="total">Item + shipping</option>
+        <div><label for="fMaxShip">Reject shipping over</label>
+          <input id="fMaxShip" type="number" min="0" step="0.01" placeholder="no cap"></div>
+        <div><label for="fNeedShip">If shipping is unknown</label>
+          <select id="fNeedShip">
+            <option value="skip">Skip the listing</option>
+            <option value="keep">Show it anyway</option>
           </select>
         </div>
+      </div>
+      <div class="row field">
         <div>
           <label for="fFormat">Listing type</label>
           <select id="fFormat">
@@ -273,8 +284,6 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
             <option value="AUCTION">Auction</option>
           </select>
         </div>
-      </div>
-      <div class="row field">
         <div>
           <label for="fCond">Condition</label>
           <select id="fCond">
@@ -283,26 +292,34 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
             <option value="USED">Used</option>
           </select>
         </div>
+      </div>
+      <div class="row field">
         <div>
           <label for="fEvery">Check every</label>
           <select id="fEvery">
-            <option value="2">2 min</option>
-            <option value="5" selected>5 min</option>
             <option value="15">15 min</option>
-            <option value="30">30 min</option>
+            <option value="30" selected>30 min</option>
             <option value="60">1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="360">6 hours</option>
           </select>
         </div>
+        <div><label for="fCountry">Seller country</label><input id="fCountry" placeholder="US"></div>
       </div>
       <div class="row field">
         <div><label for="fCat">Category ID (optional)</label><input id="fCat" placeholder="11116"></div>
-        <div><label for="fCountry">Seller country</label><input id="fCountry" placeholder="US"></div>
       </div>
+      <p class="hint" id="budgetLine"></p>
+      <p class="hint" id="budgetHint" style="margin:8px 0 0"></p>
       <div class="row" style="margin-top:12px">
         <button class="btn primary" id="saveWatchBtn">Save watch</button>
         <button class="btn" id="cancelWatchBtn">Cancel</button>
       </div>
       <p class="hint">Category 11116 is Coins &amp; Paper Money. Leave it blank to search everything.</p>
+    </div>
+
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="allDeliveredBtn">Use delivered price on all watches</button>
     </div>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
@@ -338,6 +355,11 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <button class="tab" id="tabCheap">Cheapest per item</button>
       </div>
       <div class="spacer"></div>
+      <select id="viewFormat" style="width:auto">
+        <option value="both">All listing types</option>
+        <option value="FIXED_PRICE">Buy It Now only</option>
+        <option value="AUCTION">Auctions only</option>
+      </select>
       <select id="sortBy" style="width:auto">
         <option value="found">Found most recently</option>
         <option value="low">Price: low to high</option>
@@ -518,6 +540,48 @@ function timeLeft(iso){
 }
 
 /* ---------------- call budget ---------------- */
+/* eBay's free tier is about 5,000 Browse calls a day across the whole
+   application. Each active watch spends 1440/interval calls a day, so the
+   watch list has a hard ceiling that depends on how often it checks. */
+var DAILY_CAP = 5000;
+var SAFETY = 0.9;               // leave headroom for manual scans and retries
+
+function dailyCost(w){
+  if (!w || w.active === false) return 0;
+  return Math.ceil(1440 / Math.max(1, num(w.every, 30)));
+}
+function plannedCalls(list){
+  return (list || S.watches).reduce(function(n, w){ return n + dailyCost(w); }, 0);
+}
+function budgetRoom(){ return Math.floor(DAILY_CAP * SAFETY) - plannedCalls(); }
+function budgetCap(){ return Math.floor(DAILY_CAP * SAFETY); }
+
+/* How many watches at this interval still fit. */
+function roomAt(mins){
+  return Math.max(0, Math.floor(budgetRoom() / Math.ceil(1440 / Math.max(1, mins))));
+}
+
+/* The tightest standard interval at which `count` more watches fit. Returns 0
+   when even the loosest will not, so the caller can pause the overflow. */
+var INTERVALS = [2, 5, 15, 30, 60];
+function fitInterval(count){
+  if (count <= 0) return INTERVALS[0];
+  for (var i=0;i<INTERVALS.length;i++){
+    if (roomAt(INTERVALS[i]) >= count) return INTERVALS[i];
+  }
+  return 0;
+}
+
+/* Would saving this watch push the plan over the cap? Returns "" when fine. */
+function budgetBlocks(w, replacingId){
+  var others = S.watches.filter(function(x){ return x.id !== replacingId; });
+  var after = plannedCalls(others) + dailyCost(w);
+  var cap = Math.floor(DAILY_CAP * SAFETY);
+  if (after <= cap) return "";
+  return "That would plan " + after + " searches a day, over the " + cap +
+    " limit. Check less often, or pause a watch.";
+}
+
 function today(){ return new Date().toISOString().slice(0,10); }
 function countCall(){
   if (S.callDay !== today()){ S.callDay = today(); S.calls = 0; }
@@ -539,11 +603,18 @@ function itmUrl(id){
 
 function normalise(it){
   var opts = it.buyingOptions || [];
-  var ship = null;
+  var ship = null, shipType = "";
   if (it.shippingOptions && it.shippingOptions.length){
-    var sc = it.shippingOptions[0].shippingCost;
+    var so = it.shippingOptions[0];
+    var sc = so.shippingCost;
+    shipType = so.shippingCostType || "";
     if (sc && sc.value != null) ship = parseFloat(sc.value);
   }
+  // eBay omits a figure for calculated shipping, freight and local pickup.
+  // Treating that as free is how an expensive listing slips through a
+  // total-price filter, so an unknown cost stays unknown.
+  var shipKnown = ship != null && !/calculated/i.test(shipType);
+  if (!shipKnown) ship = null;
   var price = it.price && it.price.value != null ? parseFloat(it.price.value) : null;
   var bid = it.currentBidPrice && it.currentBidPrice.value != null
     ? parseFloat(it.currentBidPrice.value) : null;
@@ -556,7 +627,8 @@ function normalise(it){
     price: live,
     currency: (it.price && it.price.currency) || S.currency,
     shipping: ship,
-    total: live == null ? null : live + (ship || 0),
+    shipKnown: shipKnown,
+    total: (live == null || !shipKnown) ? null : live + ship,
     formats: opts,
     bids: it.bidCount != null ? it.bidCount : null,
     endTime: it.itemEndDate || "",
@@ -685,7 +757,8 @@ function fetchDemo(w){
       img: "",
       price: price,
       currency: S.currency,
-      shipping: Math.round(Math.random()*800)/100,
+      shipping: Math.random() < 0.2 ? null : Math.round(Math.random()*1800)/100,
+      shipKnown: true,
       total: null,
       formats: auction ? ["AUCTION"] : ["FIXED_PRICE"],
       bids: auction ? Math.floor(Math.random()*14) : null,
@@ -696,7 +769,10 @@ function fetchDemo(w){
       location: "US"
     });
   }
-  out.forEach(function(o){ o.total = o.price + (o.shipping || 0); });
+  out.forEach(function(o){
+    o.shipKnown = o.shipping != null;
+    o.total = o.shipKnown ? o.price + o.shipping : null;
+  });
   return new Promise(function(res){ setTimeout(function(){ res(out); }, 250); });
 }
 
@@ -829,21 +905,25 @@ function nRefresh(){
 }
 
 /* Turn a Numista type into a watch. */
-function watchFromType(t, useEstimate){
+/* Turn a Numista type into a watch. `every` lets a bulk import pick an
+   interval that fits the daily budget; pass 0 to add it paused. */
+function watchFromType(t, useEstimate, every){
   var title = t.title || t.name || ("N#" + t.id);
   var issuer = (t.issuer && (t.issuer.name || t.issuer)) || "";
   var years = t.min_year && t.max_year && t.min_year !== t.max_year
     ? (t.min_year + "-" + t.max_year) : (t.min_year || "");
+  var mins = (every === undefined) ? 30 : every;
   var w = {
     id: uid(),
     label: title,
     q: [issuer, title].filter(Boolean).join(" ").replace(/\s+/g," ").trim(),
     exclude: "copy, replica, reproduction, tribute",
     min: 0, max: 0,
-    basis: "total", format: "both", condition: "",
-    every: 15, categoryId: "11116", country: "",
+    basis: "total", maxShip: 0, needShip: true,
+    format: "both", condition: "",
+    every: mins || 60, categoryId: "11116", country: "",
     numistaId: t.id != null ? String(t.id) : null, numistaYears: years,
-    active: true, lastRun: 0, lastError: ""
+    active: mins !== 0, lastRun: 0, lastError: ""
   };
   S.watches.push(w);
   if (useEstimate !== false && t.id){
@@ -852,6 +932,21 @@ function watchFromType(t, useEstimate){
     });
   }
   return w;
+}
+
+/* Plan a bulk add: pick the tightest interval at which all of them fit, and
+   pause whatever will not fit even at hourly. */
+function planBulk(count){
+  var every = fitInterval(count);
+  if (every) return { every: every, active: count, paused: 0 };
+  var canRun = roomAt(60);
+  return { every: 60, active: canRun, paused: count - canRun };
+}
+function bulkNote(plan, added){
+  if (!added) return "";
+  var s = "Added " + added + ", checking every " + plan.every + " min";
+  if (plan.paused) s += "; " + plan.paused + " added paused — no daily budget left for them";
+  return s + ".";
 }
 
 /* Wish list. Numista treats this as user data, so it needs an OAuth token on
@@ -914,32 +1009,58 @@ function importNumistaCsv(text){
       iC = col("issuer", "country");
   if (iT < 0 && iN < 0) throw new Error("no title or N# column in that file");
 
-  var made = 0;
+  // Work out how many are genuinely new before adding any, so the interval can
+  // be chosen to fit the whole batch inside the daily budget.
+  var pending = [];
   for (var r=1;r<rows.length;r++){
     var row = rows[r];
     var title = iT >= 0 ? (row[iT] || "").trim() : "";
     var nid = iN >= 0 ? parseNref(row[iN]) : "";
     if (!title && !nid) continue;
     if (nid && S.watches.some(function(w){ return w.numistaId == nid; })) continue;
-    watchFromType({
-      id: nid ? parseInt(nid,10) : null,
+    if (nid && pending.some(function(p){ return p.id === nid; })) continue;
+    pending.push({
+      id: nid || null,
       title: title || ("N#" + nid),
       issuer: iC >= 0 ? (row[iC] || "").trim() : ""
-    }, true);
-    made++;
+    });
   }
-  return made;
+
+  var plan = planBulk(pending.length);
+  pending.forEach(function(p, i){
+    watchFromType(p, true, i < plan.active ? plan.every : 0);
+  });
+  return { added: pending.length, plan: plan };
 }
 
 /* ---------------- matching ---------------- */
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
-  var v = priceOf(w, r);
-  if (v == null) return false;
   var min = num(w.min, 0), max = num(w.max, 0);
-  if (v < min) return false;
-  if (max > 0 && v > max) return false;
+  var cap = num(w.maxShip, 0);
+
+  // Shipping cap applies whichever basis is in use.
+  if (cap > 0){
+    if (r.shipping == null) { if (w.needShip !== false) return false; }
+    else if (r.shipping > cap) return false;
+  }
+
+  if (w.basis === "total" && r.total == null){
+    // Delivered price is unknowable for this listing. Default to keeping it
+    // out rather than letting an unpriced shipping charge through.
+    if (w.needShip !== false) return false;
+    // Otherwise judge it on the item price alone.
+    if (r.price == null) return false;
+    if (r.price < min) return false;
+    if (max > 0 && r.price > max) return false;
+  } else {
+    var v = priceOf(w, r);
+    if (v == null) return false;
+    if (v < min) return false;
+    if (max > 0 && v > max) return false;
+  }
+
   if (w.format !== "both" && r.formats.indexOf(w.format) < 0) return false;
   if (w.exclude){
     var bad = w.exclude.split(",").map(function(s){ return s.trim().toLowerCase(); })
@@ -979,6 +1100,11 @@ function runWatch(w){
 }
 
 function tick(){
+  if (S.callDay === today() && S.calls >= DAILY_CAP){
+    setRunning(false);
+    toast("Stopped: today's eBay search limit is used up. Scanning resumes tomorrow.");
+    return;
+  }
   var now = Date.now();
   var due = S.watches.filter(function(w){
     return w.active !== false && (!w.lastRun || now - w.lastRun >= w.every*60000);
@@ -1045,14 +1171,17 @@ function renderWatches(){
     var max = num(w.max,0);
     var band = S.currency + " " + money(num(w.min,0)) + " – " + (max > 0 ? money(max) : "any");
     var fmt = w.format === "both" ? "BIN + auction" : (w.format === "AUCTION" ? "Auction" : "Buy It Now");
+    var shipNote = w.basis === "total" ? "delivered" : "item only";
+    if (num(w.maxShip,0) > 0) shipNote += ", ship \u2264 " + money(w.maxShip);
     var last = w.lastRun ? new Date(w.lastRun).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "never";
     return '<div class="watch' + (selected === w.id ? " sel" : "") + (w.active === false ? " off" : "") +
       '" data-watch="' + w.id + '">' +
       '<h3>' + esc(w.label) + '<span class="count' + (unseen ? "" : " zero") + '">' + unseen + '</span></h3>' +
       '<div class="band">' + esc(band) + '</div>' +
-      '<div class="meta"><span>' + fmt + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
+      '<div class="meta"><span>' + fmt + '</span><span>' + esc(shipNote) + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
       (w.lastError ? '<div class="err">' + esc(w.lastError) + '</div>' : "") +
       '<div class="row" style="margin-top:6px">' +
+        '<button class="btn ghost" data-act="scan" data-id="' + w.id + '">Scan now</button>' +
         '<button class="btn ghost" data-act="toggle" data-id="' + w.id + '">' + (w.active === false ? "Resume" : "Pause") + '</button>' +
         '<button class="btn ghost" data-act="edit" data-id="' + w.id + '">Edit</button>' +
         '<button class="btn ghost danger" data-act="del" data-id="' + w.id + '">Delete</button>' +
@@ -1061,7 +1190,7 @@ function renderWatches(){
 }
 
 function gauge(r){
-  var v = r.basis === "total" ? r.item.total : r.item.price;
+  var v = deliveredOf(r);
   var min = r.min, max = r.max > 0 ? r.max : Math.max(v, min) * 1.2;
   var pad = (max - min) * 0.18 || 1;
   var lo = min - pad, hi = max + pad;
@@ -1073,6 +1202,13 @@ function gauge(r){
 }
 
 var GRADE_NAME = {g:"Good", vg:"Very good", f:"Fine", vf:"Very fine", xf:"Extremely fine", unc:"Unc"};
+
+/* The figure a listing is judged on: delivered when that basis is set and the
+   cost is known, otherwise the item price. */
+function deliveredOf(r){
+  if (r.basis === "total" && r.item.total != null) return r.item.total;
+  return r.item.price;
+}
 
 function refPrice(r, shown){
   var p = r.numistaId ? S.nPrices[r.numistaId] : null;
@@ -1091,10 +1227,10 @@ function refPrice(r, shown){
 function cheapestPerWatch(list){
   var best = {};
   list.forEach(function(r){
-    var v = r.basis === "total" ? r.item.total : r.item.price;
+    var v = deliveredOf(r);
     if (v == null) return;
     var cur = best[r.watchId];
-    var cv = cur ? (cur.basis === "total" ? cur.item.total : cur.item.price) : null;
+    var cv = cur ? deliveredOf(cur) : null;
     if (!cur || v < cv) best[r.watchId] = r;
   });
   return Object.keys(best).map(function(k){ return best[k]; });
@@ -1108,8 +1244,8 @@ function renderResults(){
 
   var sort = $("sortBy").value;
   list.sort(function(a,b){
-    var pa = a.basis === "total" ? a.item.total : a.item.price;
-    var pb = b.basis === "total" ? b.item.total : b.item.price;
+    var pa = (a.basis === "total" && a.item.total != null) ? a.item.total : a.item.price;
+    var pb = (b.basis === "total" && b.item.total != null) ? b.item.total : b.item.price;
     if (sort === "low") return pa - pb;
     if (sort === "high") return pb - pa;
     if (sort === "ending"){
@@ -1136,7 +1272,14 @@ function renderResults(){
     var bin = it.formats.indexOf("FIXED_PRICE") >= 0;
     var shown = r.basis === "total" ? it.total : it.price;
     var sub = [];
-    if (it.shipping != null) sub.push(it.shipping === 0 ? "free shipping" : "+ " + money(it.shipping) + " shipping");
+    if (r.basis === "total" && it.total != null){
+      sub.push(money(it.price) + " item" + (it.shipping ? " + " + money(it.shipping) + " ship" : " + free ship"));
+    } else if (it.shipping != null){
+      sub.push(it.shipping === 0 ? "free shipping" : "+ " + money(it.shipping) + " shipping");
+    } else {
+      sub.push("shipping not stated");
+    }
+    if (shown == null) shown = it.price;
     if (auction && it.bids != null) sub.push(it.bids + (it.bids === 1 ? " bid" : " bids"));
     var left = timeLeft(it.endTime);
     if (left) sub.push(left);
@@ -1154,6 +1297,7 @@ function renderResults(){
         : "") +
       '<div class="tags">' +
         (it.demo ? '<span class="tag sample">Sample</span>' : "") +
+        (it.shipKnown === false ? '<span class="tag noship">Shipping TBD</span>' : "") +
         (r.seen ? "" : '<span class="tag new">New</span>') +
         (auction ? '<span class="tag auction">Auction</span>' : "") +
         (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
@@ -1172,7 +1316,11 @@ function render(){
   renderWatches();
   renderResults();
   $("hitCount").textContent = "(" + S.results.filter(function(r){ return !r.seen; }).length + ")";
-  $("budget").textContent = (S.callDay === today() ? S.calls : 0) + " calls today";
+  var used = (S.callDay === today() ? S.calls : 0);
+  var planned = plannedCalls();
+  $("budget").textContent = used + " used · " + planned + "/day planned";
+  $("budget").style.color = planned > DAILY_CAP * SAFETY ? "var(--strike)" : "";
+  $("budget").title = "eBay allows about " + DAILY_CAP + " searches a day";
 }
 
 /* ---------------- watch editor ---------------- */
@@ -1184,16 +1332,34 @@ function openEditor(w){
   $("fEx").value = w ? (w.exclude || "") : "";
   $("fMin").value = w ? w.min : 0;
   $("fMax").value = w ? w.max : 100;
-  $("fBasis").value = w ? w.basis : "item";
+  $("fBasis").value = w ? w.basis : "total";
+  $("fMaxShip").value = w && w.maxShip ? w.maxShip : "";
+  $("fNeedShip").value = w ? (w.needShip === false ? "keep" : "skip") : "skip";
   $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
-  $("fEvery").value = w ? String(w.every) : "5";
+  $("fEvery").value = w ? String(w.every) : "30";
   $("fCat").value = w ? (w.categoryId || "") : "";
   $("fCountry").value = w ? (w.country || "") : "";
   $("editor").style.display = "block";
+  updateBudgetHint();
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
+
+/* Show the cost of the interval being chosen, before the save is attempted. */
+function updateBudgetHint(){
+  var every = parseInt($("fEvery").value, 10) || 30;
+  var cost = Math.ceil(1440 / every);
+  var others = S.watches.filter(function(x){ return x.id !== editingId; });
+  var after = plannedCalls(others) + cost;
+  var cap = budgetCap();
+  var el = $("budgetHint");
+  el.textContent = "This watch costs " + cost + " searches a day · " +
+    after + " of " + cap + " planned" +
+    (after > cap ? " — over the limit" : "");
+  el.style.color = after > cap ? "var(--strike)" : "";
+}
+$("fEvery").onchange = updateBudgetHint;
 
 function saveWatch(){
   var q = $("fQ").value.trim();
@@ -1209,6 +1375,8 @@ function saveWatch(){
     min: num($("fMin").value, 0),
     max: num($("fMax").value, 0),
     basis: $("fBasis").value,
+    maxShip: num($("fMaxShip").value, 0),
+    needShip: $("fNeedShip").value !== "keep",
     format: $("fFormat").value,
     condition: $("fCond").value,
     every: parseInt($("fEvery").value, 10),
@@ -1216,6 +1384,9 @@ function saveWatch(){
     country: $("fCountry").value.trim(),
     active: true, lastRun: 0, lastError: ""
   };
+  var blocked = budgetBlocks(w, editingId);
+  if (blocked){ toast(blocked); return; }
+
   if (editingId){
     for (var i=0;i<S.watches.length;i++){
       if (S.watches[i].id === editingId){
@@ -1235,7 +1406,13 @@ function saveWatch(){
 $("scanBtn").onclick = function(){ setRunning(!running); };
 $("scanNowBtn").onclick = function(){
   if (!S.watches.length){ toast("Add a watch first"); return; }
-  toast("Checking now");
+  var active = S.watches.filter(function(w){ return w.active !== false; }).length;
+  var used = (S.callDay === today() ? S.calls : 0);
+  if (used + active > DAILY_CAP){
+    toast("That would pass today's limit of " + DAILY_CAP + " searches. Pause a watch or wait for tomorrow.");
+    return;
+  }
+  toast("Checking " + active + (active === 1 ? " watch" : " watches") + " now");
   S.watches.forEach(function(w){ w.lastRun = 0; });
   tick();
 };
@@ -1267,8 +1444,28 @@ $("watchList").onclick = function(ev){
     var w = S.watches.filter(function(x){ return x.id === id; })[0];
     if (!w) return;
     var act = b.getAttribute("data-act");
+    if (act === "scan"){
+      b.textContent = "Scanning…";
+      b.disabled = true;
+      runWatch(w).then(function(n){
+        save(); render();
+        toast(n ? (n + " new for " + w.label) : ("Nothing new for " + w.label));
+      });
+      return;
+    }
     if (act === "edit") openEditor(w);
-    if (act === "toggle"){ w.active = w.active === false; save(); render(); }
+    if (act === "toggle"){
+      if (w.active === false){
+        // Resuming adds load, so it needs the same check as saving.
+        var probe = { active: true, every: w.every, id: w.id };
+        var msg = budgetBlocks(probe, w.id);
+        if (msg){ toast(msg); return; }
+        w.active = true;
+      } else {
+        w.active = false;
+      }
+      save(); render();
+    }
     if (act === "del"){
       S.watches = S.watches.filter(function(x){ return x.id !== id; });
       S.results = S.results.filter(function(r){ return r.watchId !== id; });
@@ -1283,6 +1480,24 @@ $("watchList").onclick = function(ev){
     selected = selected === wid ? null : wid;
     render();
   }
+};
+
+$("allDeliveredBtn").onclick = function(){
+  if (!S.watches.length){ toast("No watches yet"); return; }
+  S.watches.forEach(function(w){ w.basis = "total"; });
+  // Stored hits were matched under the old rule, so re-check them and drop any
+  // that only qualified because shipping was ignored.
+  var before = S.results.length;
+  S.results = S.results.filter(function(r){
+    var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
+    if (!w) return true;
+    r.basis = "total";
+    return matches(w, r.item);
+  });
+  save(); render();
+  var dropped = before - S.results.length;
+  toast(dropped ? ("Delivered pricing on. " + dropped + " listings dropped on shipping.")
+                : "Delivered pricing on for all watches.");
 };
 
 $("exportBtn").onclick = function(){
@@ -1305,12 +1520,20 @@ $("importFile").onchange = function(ev){
       var d = JSON.parse(fr.result);
       if (!d.watches) throw new Error("no watches in that file");
       S.watches = d.watches;
+      // A backup can carry more load than the budget allows; pause the tail
+      // rather than silently planning past the cap.
+      var over = 0;
+      for (var i=0;i<S.watches.length;i++){
+        var head = S.watches.slice(0, i+1);
+        if (plannedCalls(head) > budgetCap()){ S.watches[i].active = false; over++; }
+      }
       if (d.settings){
         S.marketplace = d.settings.marketplace || S.marketplace;
         S.currency = d.settings.currency || S.currency;
       }
       save(); render(); syncSetup();
-      toast("Imported " + d.watches.length + " watches");
+      toast("Imported " + d.watches.length + " watches" +
+        (over ? " — " + over + " paused to stay inside the daily limit" : ""));
     } catch(e){ toast("Could not read that file"); }
   };
   fr.readAsText(f);
@@ -1371,17 +1594,23 @@ $("nPanel").onclick = function(ev){
 $("nWishBtn").onclick = function(){
   nPanelMsg("Asking Numista for your wish list…");
   nWishlist().then(function(items){
-    var made = 0;
+    var pending = [];
     items.forEach(function(it){
       var t = it.type || it;
       var id = t.id || it.type_id;
       if (!id) return;
       if (S.watches.some(function(w){ return w.numistaId == id; })) return;
-      watchFromType({ id:id, title: t.title || it.title || ("N#" + id), issuer: t.issuer, min_year: t.min_year, max_year: t.max_year }, true);
-      made++;
+      if (pending.some(function(p){ return p.id == id; })) return;
+      pending.push({ id:id, title: t.title || it.title || ("N#" + id),
+                     issuer: t.issuer, min_year: t.min_year, max_year: t.max_year });
+    });
+    var plan = planBulk(pending.length);
+    pending.forEach(function(p, i){
+      watchFromType(p, true, i < plan.active ? plan.every : 0);
     });
     save(); render();
-    nPanelMsg(made ? ("Added " + made + " watches from your wish list.") : "Everything on that list is already watched.");
+    nPanelMsg(pending.length ? bulkNote(plan, pending.length)
+                             : "Everything on that list is already watched.");
   }).catch(function(e){
     nPanelMsg(esc(e.message) + "<br><br>Export your wish list from Numista and use <b>Export file</b> instead.");
   });
@@ -1394,9 +1623,11 @@ $("nCsvFile").onchange = function(ev){
   var fr = new FileReader();
   fr.onload = function(){
     try {
-      var made = importNumistaCsv(String(fr.result));
+      var res = importNumistaCsv(String(fr.result));
       save(); render();
-      nPanelMsg(made ? ("Added " + made + " watches. Prices are loading.") : "No new rows — those are already watched.");
+      nPanelMsg(res.added
+        ? bulkNote(res.plan, res.added) + " Prices are loading."
+        : "No new rows — those are already watched.");
     } catch(e){ nPanelMsg("Could not read that file: " + esc(e.message)); }
   };
   fr.readAsText(f);
