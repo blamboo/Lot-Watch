@@ -156,6 +156,14 @@ input,select,textarea{
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
+.lot.done{opacity:.55}
+.lot.done:hover{opacity:1}
+button.seen{
+  display:block;margin:7px 0 0 auto;border:1px solid var(--rule);background:transparent;
+  border-radius:2px;padding:3px 8px;font-size:11px;color:var(--muted);cursor:pointer;
+  font-family:var(--sans);
+}
+button.seen:hover{border-color:var(--ink);color:var(--ink)}
 .money .ref{display:block;margin-top:5px;padding-top:4px;border-top:1px solid var(--rule-soft);
   font-size:11px;color:var(--muted)}
 .money .ref b{font-weight:600;color:var(--ink)}
@@ -287,8 +295,8 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
           <input id="fMaxShip" type="number" min="0" step="0.01" placeholder="no cap"></div>
         <div><label for="fNeedShip">If shipping is unknown</label>
           <select id="fNeedShip">
-            <option value="skip">Skip the listing</option>
             <option value="keep">Show it anyway</option>
+            <option value="skip">Skip the listing</option>
           </select>
         </div>
       </div>
@@ -505,7 +513,7 @@ var DEFAULTS = {
   mode:"demo", relay:"", relayKey:"", token:"", proxy:"",
   marketplace:"EBAY_US", currency:"USD", sound:true,
   watches:[], results:[], calls:0, callDay:"",
-  nKey:"", nUser:"", nToken:"", nGrade:"vf",
+  nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
 var S;
@@ -513,6 +521,13 @@ try { S = JSON.parse(store.get("lotwatch.v1") || "null") || {}; } catch(e){ S = 
 for (var k in DEFAULTS) if (!(k in S)) S[k] = DEFAULTS[k];
 
 function save(){ store.set("lotwatch.v1", JSON.stringify(S)); }
+
+/* Unknown shipping used to hide a listing by default; now it shows one. Applied
+   to existing watches because it can only reveal listings, never hide them. */
+if (!S.shipDefaultFlipped){
+  S.watches.forEach(function(w){ w.needShip = false; });
+  S.shipDefaultFlipped = true;
+}
 
 /* Sample rows saved by an earlier version carried a search URL on the title.
    Move it out of the way so nothing links to a search results page. */
@@ -1059,7 +1074,7 @@ function watchFromType(t, useEstimate, every){
     q: [issuer, title].filter(Boolean).join(" ").replace(/\s+/g," ").trim(),
     exclude: "copy, replica, reproduction, tribute",
     min: 0, max: 0,
-    basis: "total", maxShip: 0, needShip: true,
+    basis: "total", maxShip: 0, needShip: false,
     format: "both", condition: "",
     every: mins || 60, categoryId: "11116", country: "",
     numistaId: t.id != null ? String(t.id) : null, numistaYears: years,
@@ -1183,14 +1198,15 @@ function matches(w, r){
 
   // Shipping cap applies whichever basis is in use.
   if (cap > 0){
-    if (r.shipping == null) { if (w.needShip !== false) return false; }
+    // An unknown cost cannot be checked against the cap. Showing it is the
+    // default; the row carries a "Shipping TBD" tag so the gap is visible.
+    if (r.shipping == null) { if (w.needShip === true) return false; }
     else if (r.shipping > cap) return false;
   }
 
   if (w.basis === "total" && r.total == null){
-    // Delivered price is unknowable for this listing. Default to keeping it
-    // out rather than letting an unpriced shipping charge through.
-    if (w.needShip !== false) return false;
+    // Delivered price is unknowable for this listing.
+    if (w.needShip === true) return false;
     // Otherwise judge it on the item price alone.
     if (r.price == null) return false;
     if (r.price < min) return false;
@@ -1428,7 +1444,7 @@ function renderResults(){
     var left = timeLeft(it.endTime);
     if (left) sub.push(left);
 
-    return '<article class="lot' + (r.seen ? "" : " fresh") + '">' +
+    return '<article class="lot' + (r.seen ? " done" : " fresh") + '" data-key="' + esc(r.key) + '">' +
       (it.img ? '<img src="' + esc(it.img) + '" alt="" loading="lazy">' : '<div class="noimg">no photo</div>') +
       '<div><h4>' +
         (it.url
@@ -1453,8 +1469,10 @@ function renderResults(){
       '</div>' + gauge(r) + '</div>' +
       '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
       '<span class="sub">' + esc(sub.join(" · ")) + '</span>' +
-      refPrice(r, shown) + '</div>' +
-      '</article>';
+      refPrice(r, shown) +
+      '<button class="seen" data-seen="' + esc(r.key) + '">' +
+        (r.seen ? "Mark unseen" : "Mark seen") + '</button>' +
+      '</div></article>';
   }).join("");
 }
 
@@ -1484,7 +1502,7 @@ function openEditor(w){
   syncUnlimited();
   $("fBasis").value = w ? w.basis : "total";
   $("fMaxShip").value = w && w.maxShip ? w.maxShip : "";
-  $("fNeedShip").value = w ? (w.needShip === false ? "keep" : "skip") : "skip";
+  $("fNeedShip").value = (w && w.needShip === true) ? "skip" : "keep";
   $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
   $("fEvery").value = w ? String(w.every) : "30";
@@ -1563,7 +1581,7 @@ function saveWatch(){
     max: $("fUnlimited").checked ? 0 : num($("fMax").value, 0),
     basis: $("fBasis").value,
     maxShip: num($("fMaxShip").value, 0),
-    needShip: $("fNeedShip").value !== "keep",
+    needShip: $("fNeedShip").value === "skip",
     format: $("fFormat").value,
     condition: $("fCond").value,
     every: parseInt($("fEvery").value, 10),
@@ -1677,6 +1695,23 @@ function setTab(which){
 $("tabHits").onclick = function(){ setTab("hits"); };
 $("tabAll").onclick = function(){ setTab("all"); };
 $("tabCheap").onclick = function(){ setTab("cheap"); };
+/* Marking one listing seen. On the New tab the row would vanish under the
+   cursor, so it is left in place until the next render instead. */
+$("results").onclick = function(ev){
+  var b = ev.target.closest("button[data-seen]");
+  if (!b) return;
+  var key = b.getAttribute("data-seen");
+  var r = S.results.filter(function(x){ return x.key === key; })[0];
+  if (!r) return;
+  r.seen = !r.seen;
+  save();
+  b.textContent = r.seen ? "Mark unseen" : "Mark seen";
+  var row = b.closest("article");
+  if (row) row.className = "lot" + (r.seen ? " done" : "");
+  renderWatches();
+  $("hitCount").textContent = "(" + S.results.filter(function(x){ return !x.seen; }).length + ")";
+};
+
 $("clearHitsBtn").onclick = function(){
   S.results.forEach(function(r){ r.seen = true; });
   save(); render();
