@@ -240,7 +240,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
 <div class="wrap">
 
   <aside class="rail">
-    <p class="eyebrow">Watch list <button class="btn ghost" id="newWatchBtn">+ New</button></p>
+    <p class="eyebrow">Watch list <span style="display:flex;gap:2px"><button class="btn ghost" id="newWatchBtn">+ New</button><button class="btn ghost danger" id="clearWatchesBtn">Clear all</button></span></p>
     <div id="watchList"></div>
 
     <div id="editor" style="display:none">
@@ -1037,6 +1037,7 @@ function importNumistaCsv(text){
   pending.forEach(function(p, i){
     watchFromType(p, true, i < plan.active ? plan.every : 0);
   });
+  if (pending.length) undoStash = null;
   return { added: pending.length, plan: plan };
 }
 
@@ -1274,9 +1275,10 @@ function renderResults(){
   }
 
   el.innerHTML = list.map(function(r){
-    var it = r.item;
-    var auction = it.formats.indexOf("AUCTION") >= 0;
-    var bin = it.formats.indexOf("FIXED_PRICE") >= 0;
+    var it = r.item || {};
+    var fmts = it.formats || [];
+    var auction = fmts.indexOf("AUCTION") >= 0;
+    var bin = fmts.indexOf("FIXED_PRICE") >= 0;
     var shown = r.basis === "total" ? it.total : it.price;
     var sub = [];
     if (r.basis === "total" && it.total != null){
@@ -1322,6 +1324,7 @@ function renderResults(){
 function render(){
   renderWatches();
   renderResults();
+  renderClearBtn();
   $("hitCount").textContent = "(" + S.results.filter(function(r){ return !r.seen; }).length + ")";
   var used = (S.callDay === today() ? S.calls : 0);
   var planned = plannedCalls();
@@ -1411,6 +1414,9 @@ function saveWatch(){
   var blocked = budgetBlocks(w, editingId);
   if (blocked){ toast(blocked); return; }
 
+  // A restore would replace whatever is here now, so the moment new work
+  // exists the undo is no longer safe to offer.
+  if (undoStash){ undoStash = null; renderClearBtn(); }
   if (editingId){
     for (var i=0;i<S.watches.length;i++){
       if (S.watches[i].id === editingId){
@@ -1440,6 +1446,62 @@ $("scanNowBtn").onclick = function(){
   S.watches.forEach(function(w){ w.lastRun = 0; });
   tick();
 };
+/* Clearing the list can throw away a large Numista import, so it takes two
+   clicks and keeps one level of undo for the session. */
+var clearArmed = 0, clearArmedFor = -1, undoStash = null;
+
+function clearIsArmed(){
+  return clearArmed && Date.now() < clearArmed && clearArmedFor === S.watches.length;
+}
+
+function renderClearBtn(){
+  var b = $("clearWatchesBtn");
+  if (undoStash){
+    b.textContent = "Undo clear";
+    b.className = "btn ghost";
+  } else if (clearIsArmed()){
+    b.textContent = "Sure?";
+    b.className = "btn ghost danger";
+  } else {
+    b.textContent = "Clear all";
+    b.className = "btn ghost danger";
+  }
+}
+
+$("clearWatchesBtn").onclick = function(){
+  if (undoStash){
+    S.watches = undoStash.watches;
+    S.results = undoStash.results;
+    undoStash = null;
+    save(); render(); renderClearBtn();
+    toast("Restored " + S.watches.length + " watches");
+    return;
+  }
+  if (!S.watches.length){ toast("The watch list is already empty"); return; }
+
+  if (!clearIsArmed()){
+    clearArmed = Date.now() + 5000;
+    clearArmedFor = S.watches.length;
+    renderClearBtn();
+    toast("Click again to delete all " + S.watches.length + " watches");
+    setTimeout(function(){
+      if (clearArmed && Date.now() >= clearArmed){ clearArmed = 0; renderClearBtn(); }
+    }, 5200);
+    return;
+  }
+
+  undoStash = { watches: S.watches, results: S.results };
+  var n = S.watches.length;
+  S.watches = [];
+  S.results = [];
+  selected = null;
+  clearArmed = 0;
+  clearArmedFor = -1;
+  closeEditor();
+  save(); render(); renderClearBtn();
+  toast("Cleared " + n + (n === 1 ? " watch" : " watches") + " — press Undo clear to restore");
+};
+
 $("newWatchBtn").onclick = function(){ openEditor(null); };
 $("saveWatchBtn").onclick = saveWatch;
 $("cancelWatchBtn").onclick = closeEditor;
@@ -1544,6 +1606,7 @@ $("importFile").onchange = function(ev){
       var d = JSON.parse(fr.result);
       if (!d.watches) throw new Error("no watches in that file");
       S.watches = d.watches;
+      undoStash = null;
       // A backup can carry more load than the budget allows; pause the tail
       // rather than silently planning past the cap.
       var over = 0;
@@ -1632,6 +1695,7 @@ $("nWishBtn").onclick = function(){
     pending.forEach(function(p, i){
       watchFromType(p, true, i < plan.active ? plan.every : 0);
     });
+    undoStash = null;
     save(); render();
     nPanelMsg(pending.length ? bulkNote(plan, pending.length)
                              : "Everything on that list is already watched.");
