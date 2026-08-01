@@ -81,6 +81,10 @@ summary:focus-visible,a:focus-visible{outline:2px solid var(--patina);outline-of
 .btn.ghost:hover{color:var(--ink);border-color:var(--rule)}
 .btn.danger:hover{border-color:var(--strike);color:var(--strike)}
 label{display:block;font-size:12px;color:var(--muted);margin:0 0 3px}
+label.check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink);
+  cursor:pointer;margin:0;user-select:none}
+label.check input{width:auto;margin:0;accent-color:var(--patina);cursor:pointer}
+input:disabled{background:var(--rule-soft);color:var(--muted);cursor:not-allowed}
 input,select,textarea{
   width:100%;border:1px solid var(--rule);border-radius:2px;background:#fff;
   padding:6px 8px;
@@ -256,7 +260,10 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       </div>
       <div class="row field">
         <div><label for="fMin">Lowest price</label><input id="fMin" type="number" min="0" step="0.01" value="0"></div>
-        <div><label for="fMax">Highest price</label><input id="fMax" type="number" min="0" step="0.01" value="100"></div>
+        <div><label for="fMax">Highest price</label><input id="fMax" type="number" min="0" step="0.01" placeholder="any"></div>
+      </div>
+      <div class="field" style="margin-top:-4px">
+        <label class="check"><input type="checkbox" id="fUnlimited" checked> No upper limit</label>
       </div>
       <div class="field" style="margin-bottom:9px">
         <label for="fBasis">Your price band applies to</label>
@@ -1331,7 +1338,9 @@ function openEditor(w){
   $("fQ").value = w ? w.q : "";
   $("fEx").value = w ? (w.exclude || "") : "";
   $("fMin").value = w ? w.min : 0;
-  $("fMax").value = w ? w.max : 100;
+  $("fMax").value = (w && num(w.max,0) > 0) ? w.max : "";
+  $("fUnlimited").checked = !(w && num(w.max,0) > 0);
+  syncUnlimited();
   $("fBasis").value = w ? w.basis : "total";
   $("fMaxShip").value = w && w.maxShip ? w.maxShip : "";
   $("fNeedShip").value = w ? (w.needShip === false ? "keep" : "skip") : "skip";
@@ -1345,6 +1354,21 @@ function openEditor(w){
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
+
+/* The ceiling and the checkbox are two views of one value: max 0 means no
+   ceiling. Typing an amount clears the checkbox; ticking it clears the amount. */
+function syncUnlimited(){
+  var on = $("fUnlimited").checked;
+  $("fMax").disabled = on;
+  if (on) $("fMax").value = "";
+}
+$("fUnlimited").onchange = syncUnlimited;
+$("fMax").oninput = function(){
+  if ($("fMax").value.trim() !== "" && $("fUnlimited").checked){
+    $("fUnlimited").checked = false;
+    $("fMax").disabled = false;
+  }
+};
 
 /* Show the cost of the interval being chosen, before the save is attempted. */
 function updateBudgetHint(){
@@ -1373,7 +1397,7 @@ function saveWatch(){
     label: label, q: q,
     exclude: $("fEx").value.trim(),
     min: num($("fMin").value, 0),
-    max: num($("fMax").value, 0),
+    max: $("fUnlimited").checked ? 0 : num($("fMax").value, 0),
     basis: $("fBasis").value,
     maxShip: num($("fMaxShip").value, 0),
     needShip: $("fNeedShip").value !== "keep",
