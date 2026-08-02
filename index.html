@@ -192,6 +192,25 @@ input,select,textarea{
 .blockchip button{border:none;background:none;color:var(--muted);cursor:pointer;
   padding:0;font-size:13px;line-height:1;font-family:var(--sans)}
 .blockchip button:hover{color:var(--patina)}
+.facets{border-bottom:1px solid var(--rule-soft);padding-bottom:10px;margin-bottom:12px}
+.facetrow{display:flex;flex-wrap:wrap;gap:4px;align-items:baseline;margin-top:8px}
+.facetrow .lab{
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);margin-right:4px;flex:0 0 auto;
+}
+.chip{
+  font-family:var(--mono);font-size:11px;border:1px solid var(--rule);border-radius:2px;
+  background:var(--ground);padding:2px 7px;cursor:pointer;color:var(--ink);
+}
+.chip:hover{border-color:var(--ink)}
+.chip.on{background:var(--patina);border-color:var(--patina);color:#fff}
+.chip .n{color:var(--muted);margin-left:4px}
+.chip.on .n{color:#cfe3dc}
+.chip.bc{border-style:dashed}
+.facetmore{
+  font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;
+  text-decoration:underline;font-family:var(--sans);
+}
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
@@ -454,6 +473,16 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     </div>
 
     <h2 id="viewing"></h2>
+
+    <div class="facets" id="facets">
+      <div class="row" style="max-width:520px">
+        <input id="fFind" placeholder="Search these listings — title and description">
+        <button class="btn" id="clearFacetsBtn" style="flex:0 0 auto">Clear filters</button>
+      </div>
+      <div id="yearFacet"></div>
+      <div id="metalFacet"></div>
+    </div>
+
     <div id="results"></div>
 
     <details class="setup" id="setupPanel">
@@ -729,6 +758,7 @@ function normalise(it){
   return {
     id: it.itemId,
     title: it.title || "",
+    desc: it.shortDescription || "",
     url: it.itemWebUrl || itmUrl(it.itemId),
     img: (it.image && it.image.imageUrl) || (it.thumbnailImages && it.thumbnailImages[0] && it.thumbnailImages[0].imageUrl) || "",
     price: live,
@@ -922,6 +952,8 @@ function buildParams(w, tier, phrase, cat){
   var c = cat != null ? cat : (w.cats && w.cats[0]) || w.categoryId;
   if (c) p.set("category_ids", String(c));
   p.set("filter", f.join(","));
+  // EXTENDED adds shortDescription (condition + item aspects) at no extra call.
+  p.set("fieldgroups", "EXTENDED");
   // "Any word" leans on eBay's relevance ranking; the other modes are already
   // narrow, so newest-first is more useful there.
   p.set("sort", (w.match === "any") ? "" : "newlyListed");
@@ -1004,6 +1036,10 @@ function readErr(j){
 
 /* demo generator — deterministic enough to look like a real feed */
 var DEMO_WORDS = ["Uncirculated","Toned","Original","Album","Estate","Lot of 3","Certified","Raw","Choice","Problem-free"];
+/* Demo titles carry realistic years and metals so the year and metal lists are
+   visible without a live connection. */
+var DEMO_YEARS = ["1564","1982","1326","100 B.C.","1328-1350","1916-D","AD 117","270-200 BC","1861","2001"];
+var DEMO_METAL = ["Silver","Gold","AE Bronze","Copper","Billon","AR Denarius","Base metal","Nickel"];
 function fetchDemo(w){
   var min = num(w.min,0), max = num(w.max,100);
   var span = Math.max(max - min, 1);
@@ -1018,7 +1054,11 @@ function fetchDemo(w){
     price = Math.round(price*100)/100;
     out.push({
       id: "demo-" + w.id + "-" + Math.random().toString(36).slice(2,9),
-      title: (w.q || "sample item") + " — " + DEMO_WORDS[Math.floor(Math.random()*DEMO_WORDS.length)],
+      title: (w.q || "sample item") + " " +
+        DEMO_YEARS[Math.floor(Math.random()*DEMO_YEARS.length)] + " " +
+        DEMO_METAL[Math.floor(Math.random()*DEMO_METAL.length)] + " — " +
+        DEMO_WORDS[Math.floor(Math.random()*DEMO_WORDS.length)],
+      desc: "Sample listing for testing the filters.",
       demo: true,
       url: "",
       searchUrl: "https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(w.q || ""),
@@ -1547,6 +1587,106 @@ function formatFilter(mode){
   return "buyingOptions:{FIXED_PRICE|AUCTION}";
 }
 
+/* ---------------- facets: years and metals ---------------- */
+/* Coin titles are full of numbers that are NOT years — grades (MS 63, VF 30-35),
+   weights (1 oz), lot counts, catalogue numbers (#1175070), denominations
+   (25000 dinar). So: plain numbers only count as years at 3-4 digits inside a
+   plausible range, and anything marked BC/AD counts at 1-4 digits. */
+
+function yearLabel(y){ return y < 0 ? (-y) + " BC" : String(y); }
+
+function extractYears(text){
+  var t = String(text || "");
+  var out = {};
+  var add = function(y){
+    if (y === 0 || isNaN(y)) return;
+    if (y > 2100 || y < -3000) return;
+    out[y] = 1;
+  };
+
+  // "100 BC", "100 B.C.", "133 BCE" — take the number before the marker.
+  t.replace(/(\d{1,4})\s*(?:B\.?\s?C\.?E?\.?)(?![a-z])/gi, function(m, n){
+    add(-parseInt(n, 10)); return m;
+  });
+  // "AD 50", "A.D. 120" — take the number after the marker.
+  t.replace(/\bA\.?\s?D\.?\s*(\d{1,4})\b/gi, function(m, n){
+    add(parseInt(n, 10)); return m;
+  });
+  // Ranges of 3-4 digits: "1328-1350", "270-200". Both ends count.
+  // A BC-marked range ("270-200 BC") makes both ends BC.
+  t.replace(/(\d{3,4})\s*[-\u2013\u2014]\s*(\d{3,4})\s*(B\.?\s?C\.?E?\.?)?/gi,
+    function(m, a, b, bc){
+      var sign = bc ? -1 : 1;
+      add(sign * parseInt(a, 10));
+      add(sign * parseInt(b, 10));
+      return m;
+    });
+  // Bare 4-digit years in a plausible minting range.
+  t.replace(/\b(\d{4})\b/g, function(m, n){
+    var y = parseInt(n, 10);
+    if (y >= 1000 && y <= 2100) add(y);
+    return m;
+  });
+
+  return Object.keys(out).map(Number).sort(function(a,b){ return a - b; });
+}
+
+/* Metal words, longest-first so "base metal" beats a bare "metal" and
+   "silver plated" is not read as solid silver. */
+var METALS = [
+  { key:"gold",     label:"Gold",       words:["gold","aureus","solidus","22k","24k",".999 gold"] },
+  { key:"silver",   label:"Silver",     words:["silver","sterling",".925","denarius","tetradrachm"] },
+  { key:"electrum", label:"Electrum",   words:["electrum"] },
+  { key:"billon",   label:"Billon",     words:["billon"] },
+  { key:"bronze",   label:"Bronze",     words:["bronze"] },
+  { key:"copper",   label:"Copper",     words:["copper"] },
+  { key:"brass",    label:"Brass",      words:["brass"] },
+  { key:"nickel",   label:"Nickel",     words:["nickel","cupronickel","cupro-nickel"] },
+  { key:"platinum", label:"Platinum",   words:["platinum","palladium"] },
+  { key:"pewter",   label:"Pewter",     words:["pewter","tin"] },
+  { key:"lead",     label:"Lead",       words:["lead"] },
+  { key:"zinc",     label:"Zinc",       words:["zinc"] },
+  { key:"steel",    label:"Steel",      words:["steel","iron"] },
+  { key:"aluminum", label:"Aluminium",  words:["aluminum","aluminium"] },
+  { key:"base",     label:"Base metal", words:["base metal","ae ","potin","orichalcum"] }
+];
+/* Ancient cataloguers write AV / AR / AE for gold / silver / bronze. These are
+   case-sensitive on the raw title — lowercasing would match "ae" inside words. */
+var METAL_ABBR = [
+  { key:"gold",   re:/\bAV\b/ },
+  { key:"silver", re:/\bAR\b/ },
+  { key:"bronze", re:/\bAE\d*\b/ }
+];
+
+function extractMetals(text){
+  var raw = String(text || "");
+  var low = raw.toLowerCase();
+  var found = {};
+  // "silver plated" / "gold plated" / "gold wash" describe a coating, not the
+  // metal, so they must not file a coin under solid gold or silver.
+  var plated = /\b(gold|silver|platinum)[\s-]*(plated|plate|wash|washed|filled|tone|toned|colou?red)\b/g;
+  var cleaned = low.replace(plated, " ");
+  METALS.forEach(function(m){
+    for (var i=0;i<m.words.length;i++){
+      var w = m.words[i];
+      var re = new RegExp("(^|[^a-z])" + w.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^a-z]|$)");
+      if (re.test(cleaned)){ found[m.key] = 1; return; }
+    }
+  });
+  METAL_ABBR.forEach(function(a){ if (a.re.test(raw)) found[a.key] = 1; });
+  return Object.keys(found);
+}
+
+function metalLabel(key){
+  var m = METALS.filter(function(x){ return x.key === key; })[0];
+  return m ? m.label : key;
+}
+
+/* All the text we can search for one listing. */
+function itemText(it){
+  return [(it && it.title) || "", (it && it.desc) || ""].join(" ");
+}
+
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
@@ -1853,13 +1993,95 @@ function renderViewing(){
     '<button class="btn ghost" id="reEstBtn">Re-estimate</button>';
 }
 
+/* Facet state: a free-text query plus the year and metal chips that are on. */
+var facet = { text:"", years:{}, metals:{}, yearsOpen:false };
+function facetActive(){
+  return !!facet.text || Object.keys(facet.years).length || Object.keys(facet.metals).length;
+}
+
+/* Cache the derived years/metals on the result so a long list is not re-parsed
+   on every keystroke. Keyed by the text it was derived from. */
+function facetsOf(r){
+  var txt = itemText(r.item);
+  if (!r._fx || r._fx.src !== txt){
+    r._fx = { src: txt, years: extractYears(txt), metals: extractMetals(txt) };
+  }
+  return r._fx;
+}
+
+function passesFacets(r){
+  var fx = facetsOf(r);
+  if (facet.text){
+    var hay = itemText(r.item).toLowerCase();
+    var terms = facet.text.toLowerCase().split(/\s+/).filter(Boolean);
+    for (var i=0;i<terms.length;i++) if (hay.indexOf(terms[i]) < 0) return false;
+  }
+  var yrs = Object.keys(facet.years);
+  if (yrs.length){
+    // Any selected year, not all — picking 1564 and 1982 shows both.
+    var hit = yrs.some(function(y){ return fx.years.indexOf(Number(y)) >= 0; });
+    if (!hit) return false;
+  }
+  var mts = Object.keys(facet.metals);
+  if (mts.length){
+    var mhit = mts.some(function(m){ return fx.metals.indexOf(m) >= 0; });
+    if (!mhit) return false;
+  }
+  return true;
+}
+
+/* Build the chip lists from whatever is currently in scope, so counts always
+   describe what you can actually see. */
+function renderFacets(){
+  var pool = inScope();
+  if (tab === "hits") pool = pool.filter(function(r){ return !r.seen; });
+
+  var yc = {}, mc = {};
+  pool.forEach(function(r){
+    var fx = facetsOf(r);
+    fx.years.forEach(function(y){ yc[y] = (yc[y] || 0) + 1; });
+    fx.metals.forEach(function(m){ mc[m] = (mc[m] || 0) + 1; });
+  });
+
+  var years = Object.keys(yc).map(Number).sort(function(a,b){ return a - b; });
+  var LIMIT = 24;
+  var shown = facet.yearsOpen ? years : years.slice(0, LIMIT);
+  $("yearFacet").innerHTML = years.length
+    ? '<div class="facetrow"><span class="lab">Years</span>' +
+      shown.map(function(y){
+        return '<button class="chip' + (facet.years[y] ? " on" : "") + (y < 0 ? " bc" : "") +
+          '" data-year="' + y + '">' + esc(yearLabel(y)) +
+          '<span class="n">' + yc[y] + '</span></button>';
+      }).join("") +
+      (years.length > LIMIT
+        ? '<button class="facetmore" id="yearMoreBtn">' +
+          (facet.yearsOpen ? "show fewer" : "+" + (years.length - LIMIT) + " more") + "</button>"
+        : "") +
+      '</div>'
+    : "";
+
+  var metals = Object.keys(mc).sort(function(a,b){ return mc[b] - mc[a]; });
+  $("metalFacet").innerHTML = metals.length
+    ? '<div class="facetrow"><span class="lab">Metal</span>' +
+      metals.map(function(m){
+        return '<button class="chip' + (facet.metals[m] ? " on" : "") +
+          '" data-metal="' + esc(m) + '">' + esc(metalLabel(m)) +
+          '<span class="n">' + mc[m] + '</span></button>';
+      }).join("") + '</div>'
+    : "";
+
+  $("clearFacetsBtn").style.display = facetActive() ? "" : "none";
+}
+
 function renderResults(){
   renderViewing();
+  renderFacets();
   var list = S.results.slice();
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
   if (selected && selected !== ALL){
     list = list.filter(function(r){ return r.watchId === selected; });
   }
+  if (facetActive()) list = list.filter(passesFacets);
   if (tab === "cheap") list = cheapestPerWatch(list);
 
   var sort = $("sortBy").value;
@@ -1880,11 +2102,13 @@ function renderResults(){
   var el = $("results");
   if (!list.length){
     el.innerHTML = '<div class="empty">' +
-      (S.watches.length
-        ? (tab === "hits"
-            ? "Nothing new for this watch. Pick another on the left, or All watches."
-            : "No listings inside this watch's price band yet.")
-        : "Add a watch on the left, then press Start scanning.") +
+      (!S.watches.length
+        ? "Add a watch on the left, then press Start scanning."
+        : facetActive()
+          ? "No listings match those filters. Press Clear filters to see everything."
+          : (tab === "hits"
+              ? "Nothing new for this watch. Pick another on the left, or All watches."
+              : "No listings inside this watch's price band yet.")) +
       '</div>';
     return;
   }
@@ -2467,6 +2691,37 @@ $("relayTestBtn").onclick = function(){
       toast("Relay works — eBay returned " + items.length + " listings");
     })
     .catch(function(e){ toast(e.message); });
+};
+
+/* Facet interactions. Chips toggle, so a second click removes that year. */
+$("yearFacet").onclick = function(ev){
+  if (ev.target.id === "yearMoreBtn"){ facet.yearsOpen = !facet.yearsOpen; renderResults(); return; }
+  var b = ev.target.closest("button[data-year]");
+  if (!b) return;
+  var y = b.getAttribute("data-year");
+  if (facet.years[y]) delete facet.years[y]; else facet.years[y] = 1;
+  renderResults();
+};
+$("metalFacet").onclick = function(ev){
+  var b = ev.target.closest("button[data-metal]");
+  if (!b) return;
+  var m = b.getAttribute("data-metal");
+  if (facet.metals[m]) delete facet.metals[m]; else facet.metals[m] = 1;
+  renderResults();
+};
+var findTimer = null;
+$("fFind").oninput = function(){
+  // Debounced so typing does not re-filter a long list on every keystroke.
+  clearTimeout(findTimer);
+  findTimer = setTimeout(function(){
+    facet.text = $("fFind").value.trim();
+    renderResults();
+  }, 180);
+};
+$("clearFacetsBtn").onclick = function(){
+  facet.text = ""; facet.years = {}; facet.metals = {}; facet.yearsOpen = false;
+  $("fFind").value = "";
+  renderResults();
 };
 
 $("blockList").onclick = function(ev){
