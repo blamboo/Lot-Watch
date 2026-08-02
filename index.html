@@ -346,8 +346,10 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
           <label for="fFormat">Listing type</label>
           <select id="fFormat">
             <option value="both">Both</option>
-            <option value="FIXED_PRICE">Buy It Now</option>
-            <option value="AUCTION">Auction</option>
+            <option value="FIXED_PRICE">Buy It Now (incl. auctions with BIN)</option>
+            <option value="AUCTION">Auction (incl. auctions with BIN)</option>
+            <option value="BIN_ONLY">Buy It Now only — no auction</option>
+            <option value="AUCTION_ONLY">Auction only — no BIN</option>
           </select>
         </div>
         <div>
@@ -908,8 +910,7 @@ function buildParams(w, tier, phrase, cat){
   else f.push("price:[" + min + "..]");
   f.push("priceCurrency:" + S.currency);
 
-  if (w.format === "both") f.push("buyingOptions:{FIXED_PRICE|AUCTION}");
-  else f.push("buyingOptions:{" + w.format + "}");
+  f.push(formatFilter(w.format));
 
   if (w.condition) f.push("conditions:{" + w.condition + "}");
   if (w.country) f.push("itemLocationCountry:" + w.country.toUpperCase());
@@ -1522,6 +1523,30 @@ function unblockSeller(name){
   save();
 }
 
+/* eBay marks an auction that also offers Buy It Now with BOTH options, and
+   drops FIXED_PRICE only once a qualifying bid lands. So such a listing
+   legitimately answers either filter — which reads as the filter ignoring you.
+   The *_ONLY modes exclude them. */
+function formatOk(mode, formats){
+  var f = formats || [];
+  var auction = f.indexOf("AUCTION") >= 0;
+  var bin = f.indexOf("FIXED_PRICE") >= 0;
+  switch (mode){
+    case "AUCTION":      return auction;
+    case "FIXED_PRICE":  return bin;
+    case "AUCTION_ONLY": return auction && !bin;
+    case "BIN_ONLY":     return bin && !auction;
+    default:             return true;   // "both"
+  }
+}
+/* What to ask eBay for. The strict modes have no eBay equivalent, so they send
+   the loose filter and are narrowed here. */
+function formatFilter(mode){
+  if (mode === "AUCTION" || mode === "AUCTION_ONLY") return "buyingOptions:{AUCTION}";
+  if (mode === "FIXED_PRICE" || mode === "BIN_ONLY") return "buyingOptions:{FIXED_PRICE}";
+  return "buyingOptions:{FIXED_PRICE|AUCTION}";
+}
+
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
@@ -1551,7 +1576,7 @@ function matches(w, r){
     if (max > 0 && v > max) return false;
   }
 
-  if (w.format !== "both" && r.formats.indexOf(w.format) < 0) return false;
+  if (!formatOk(w.format, r.formats)) return false;
   if (w.exclude){
     var bad = w.exclude.split(",").map(function(s){ return s.trim().toLowerCase(); })
       .filter(function(s){ return s.length; });
@@ -1692,7 +1717,9 @@ function renderWatches(){
     var unseen = S.results.filter(function(r){ return r.watchId === w.id && !r.seen; }).length;
     var max = num(w.max,0);
     var band = S.currency + " " + money(num(w.min,0)) + " – " + (max > 0 ? money(max) : "any");
-    var fmt = w.format === "both" ? "BIN + auction" : (w.format === "AUCTION" ? "Auction" : "Buy It Now");
+    var FMT_LABEL = { both:"BIN + auction", AUCTION:"Auction", FIXED_PRICE:"Buy It Now",
+                     AUCTION_ONLY:"Auction only", BIN_ONLY:"BIN only" };
+    var fmt = FMT_LABEL[w.format] || "BIN + auction";
     var shipNote = w.basis === "total" ? "delivered" : "item only";
     if (num(w.maxShip,0) > 0) shipNote += ", ship \u2264 " + money(w.maxShip);
     var np = watchPhrases(w).length, nc = watchCats(w).length;
@@ -1898,8 +1925,10 @@ function renderResults(){
         (r.score != null && r.score < 0.75
           ? '<span class="tag partial">Partial match</span>' : "") +
         (r.seen ? "" : '<span class="tag new">New</span>') +
-        (auction ? '<span class="tag auction">Auction</span>' : "") +
-        (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
+        (auction && bin
+          ? '<span class="tag auction">Auction + BIN</span>'
+          : (auction ? '<span class="tag auction">Auction</span>' : "") +
+            (bin ? '<span class="tag bin">Buy It Now</span>' : "")) +
         (it.condition ? '<span class="tag">' + esc(it.condition) + '</span>' : "") +
         '<span class="tag">' + esc(r.watchLabel) + '</span>' +
         (it.seller
@@ -2138,6 +2167,17 @@ function saveWatch(){
         S.watches[i] = w;
       }
     }
+    // Listings already collected were matched against the OLD settings. Without
+    // this, narrowing a watch (Auction only, a tighter band, a shipping cap)
+    // leaves every previously-matched row on screen and the filter looks broken.
+    var before = S.results.length;
+    S.results = S.results.filter(function(r){
+      if (r.watchId !== w.id) return true;
+      r.min = num(w.min,0); r.max = num(w.max,0); r.basis = w.basis;
+      return matches(w, r.item);
+    });
+    var dropped = before - S.results.length;
+    if (dropped) toast(dropped + " stored listing" + (dropped === 1 ? "" : "s") + " no longer match");
   } else {
     S.watches.push(w);
   }
