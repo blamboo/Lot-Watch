@@ -487,6 +487,12 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <input id="fFind" placeholder="Search these listings — title and description">
         <button class="btn" id="clearFacetsBtn" style="flex:0 0 auto">Clear filters</button>
       </div>
+      <div class="facetrow" id="typeFacet">
+        <span class="lab">Type</span>
+        <button class="chip on" data-type="all">All<span class="n" id="nAll"></span></button>
+        <button class="chip" data-type="bin">Buy It Now<span class="n" id="nBin"></span></button>
+        <button class="chip" data-type="auction">Auction<span class="n" id="nAuc"></span></button>
+      </div>
       <div id="yearFacet"></div>
       <div id="metalFacet"></div>
     </div>
@@ -2183,9 +2189,19 @@ function renderViewing(){
 }
 
 /* Facet state: a free-text query plus the year and metal chips that are on. */
-var facet = { text:"", years:{}, metals:{}, yearsOpen:false };
+var facet = { text:"", years:{}, metals:{}, yearsOpen:false, type:"all" };
+
+/* The listing-type view. Strict in both directions: a listing that offers both
+   a fixed price AND bidding is neither a pure Buy It Now nor a pure auction, so
+   it appears only under All. */
+function typeOk(item){
+  if (facet.type === "bin")     return isBin(item) && !isAuction(item);
+  if (facet.type === "auction") return isAuction(item) && !isBin(item);
+  return true;
+}
 function facetActive(){
-  return !!facet.text || Object.keys(facet.years).length || Object.keys(facet.metals).length;
+  return !!facet.text || Object.keys(facet.years).length ||
+         Object.keys(facet.metals).length || facet.type !== "all";
 }
 
 /* Cache the derived years/metals on the result so a long list is not re-parsed
@@ -2224,6 +2240,27 @@ function passesFacets(r){
 function renderFacets(){
   var pool = inScope();
   if (tab === "hits") pool = pool.filter(function(r){ return !r.seen; });
+  // Respect each watch's own format setting here too, so the counts describe
+  // exactly what the list will show.
+  pool = pool.filter(function(r){
+    var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
+    return !w || formatOk(w.format, r.item);
+  });
+
+  var nBin = 0, nAuc = 0;
+  pool.forEach(function(r){
+    var a = isAuction(r.item), b = isBin(r.item);
+    if (b && !a) nBin++;
+    if (a && !b) nAuc++;
+  });
+  $("nAll").textContent = pool.length;
+  $("nBin").textContent = nBin;
+  $("nAuc").textContent = nAuc;
+  var tb = $("typeFacet").querySelectorAll("button[data-type]");
+  for (var ti=0; ti<tb.length; ti++){
+    tb[ti].className = "chip" + (tb[ti].getAttribute("data-type") === facet.type ? " on" : "");
+  }
+  if (facet.type !== "all") pool = pool.filter(function(r){ return typeOk(r.item); });
 
   var yc = {}, mc = {};
   pool.forEach(function(r){
@@ -2266,10 +2303,20 @@ function renderResults(){
   renderViewing();
   renderFacets();
   var list = S.results.slice();
+  // Enforce each watch's listing-type setting HERE, at render, not only when a
+  // listing was collected. Collection-time filtering alone leaves rows gathered
+  // under an older setting sitting on screen, which is why the filter kept
+  // looking broken. Doing it here means it can never be stale.
+  list = list.filter(function(r){
+    var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
+    if (!w) return true;
+    return formatOk(w.format, r.item);
+  });
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
   if (selected && selected !== ALL){
     list = list.filter(function(r){ return r.watchId === selected; });
   }
+  list = list.filter(function(r){ return typeOk(r.item); });
   if (facetActive()) list = list.filter(passesFacets);
   if (tab === "cheap") list = cheapestPerWatch(list);
 
@@ -2891,6 +2938,12 @@ $("yearFacet").onclick = function(ev){
   if (facet.years[y]) delete facet.years[y]; else facet.years[y] = 1;
   renderResults();
 };
+$("typeFacet").onclick = function(ev){
+  var b = ev.target.closest("button[data-type]");
+  if (!b) return;
+  facet.type = b.getAttribute("data-type");
+  renderResults();
+};
 $("metalFacet").onclick = function(ev){
   var b = ev.target.closest("button[data-metal]");
   if (!b) return;
@@ -2909,6 +2962,7 @@ $("fFind").oninput = function(){
 };
 $("clearFacetsBtn").onclick = function(){
   facet.text = ""; facet.years = {}; facet.metals = {}; facet.yearsOpen = false;
+  facet.type = "all";
   $("fFind").value = "";
   renderResults();
 };
