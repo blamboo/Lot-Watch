@@ -440,12 +440,20 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     <div id="nPanel"></div>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
-    <p class="eyebrow">Backup</p>
+    <p class="eyebrow">Watch list file</p>
     <div class="row">
-      <button class="btn" id="exportBtn">Export</button>
-      <button class="btn" id="importBtn">Import</button>
+      <button class="btn" id="exportBtn">Export all</button>
+      <button class="btn" id="exportOneBtn">Export this one</button>
     </div>
-    <input type="file" id="importFile" accept=".json" style="display:none">
+    <div class="row" style="margin-top:6px">
+      <select id="fImportMode" style="flex:1">
+        <option value="merge">Add to my list</option>
+        <option value="replace">Replace my list</option>
+      </select>
+      <button class="btn" id="importBtn" style="flex:0 0 auto">Import…</button>
+    </div>
+    <p class="hint" style="margin-top:5px">Adding skips watches you already have.</p>
+    <input type="file" id="importFile" accept=".json,.txt" style="display:none">
   </aside>
 
   <main class="main">
@@ -1756,6 +1764,157 @@ function matches(w, r){
   return true;
 }
 
+/* ---------------- watch list files ---------------- */
+/* An imported file is untrusted: it may come from another person, an older
+   version, or a hand edit. Rebuild each watch field by field rather than
+   trusting the object, so a malformed entry can never poison the list. */
+function sanitizeWatch(raw){
+  if (!raw || typeof raw !== "object") return null;
+
+  var phrases = [];
+  if (Array.isArray(raw.phrases)) phrases = raw.phrases;
+  else if (raw.q) phrases = [raw.q];
+  phrases = phrases.map(function(x){ return String(x || "").trim(); })
+    .filter(function(x, i, a){ return x.length && a.indexOf(x) === i; });
+  if (!phrases.length) return null;   // a watch with nothing to search is junk
+
+  var cats = [];
+  if (Array.isArray(raw.cats)) cats = raw.cats;
+  else if (raw.categoryId) cats = [raw.categoryId];
+  cats = cats.map(function(x){ return String(x || "").trim(); })
+    .filter(function(x, i, a){ return x.length && a.indexOf(x) === i; });
+  if (!cats.length) cats = ["11116"];
+
+  var MODES = ["smart","all","any"];
+  var FORMATS = ["both","AUCTION","FIXED_PRICE","AUCTION_ONLY","BIN_ONLY"];
+  var EVERY = [2,5,15,30,60];
+  var every = parseInt(raw.every, 10);
+  if (EVERY.indexOf(every) < 0) every = 30;
+
+  return {
+    id: uid(),                                  // always fresh: never collide
+    label: String(raw.label || phrases[0]).slice(0, 120),
+    q: phrases[0],
+    phrases: phrases,
+    cats: cats,
+    match: MODES.indexOf(raw.match) >= 0 ? raw.match : "smart",
+    tier: 0, tiers: {},
+    exclude: String(raw.exclude || "").slice(0, 300),
+    min: Math.max(0, num(raw.min, 0)),
+    max: Math.max(0, num(raw.max, 0)),
+    basis: raw.basis === "item" ? "item" : "total",
+    maxShip: Math.max(0, num(raw.maxShip, 0)),
+    needShip: raw.needShip === true,
+    format: FORMATS.indexOf(raw.format) >= 0 ? raw.format : "both",
+    condition: (raw.condition === "NEW" || raw.condition === "USED") ? raw.condition : "",
+    every: every,
+    country: String(raw.country || "").slice(0, 8),
+    numistaId: raw.numistaId != null ? String(raw.numistaId) : undefined,
+    active: raw.active !== false,
+    lastRun: 0, lastError: ""
+  };
+}
+
+/* What makes two watches "the same" for merge purposes: the search itself.
+   Labels and intervals differ between people; the query does not. */
+function watchSignature(w){
+  var p = watchPhrases(w).map(function(x){ return String(x).toLowerCase().trim(); }).sort().join("|");
+  var c = watchCats(w).slice().sort().join(",");
+  return p + "::" + c + "::" + (w.format || "both");
+}
+
+function exportPayload(list){
+  return {
+    lotwatch: 2,
+    exported: new Date().toISOString(),
+    watches: list.map(function(w){
+      // Drop runtime noise; a shared list should not carry someone else's
+      // learned tiers, errors or price estimates.
+      return {
+        label: w.label, phrases: watchPhrases(w), cats: watchCats(w),
+        match: w.match, exclude: w.exclude, min: w.min, max: w.max,
+        basis: w.basis, maxShip: w.maxShip, needShip: w.needShip,
+        format: w.format, condition: w.condition, every: w.every,
+        country: w.country, numistaId: w.numistaId, active: w.active
+      };
+    }),
+    blocked: S.blocked || [],
+    settings: { marketplace: S.marketplace, currency: S.currency }
+  };
+}
+
+function downloadJson(obj, name){
+  var blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+}
+
+function fileStamp(){ return new Date().toISOString().slice(0,10); }
+
+/* Merge or replace. Returns a report rather than toasting itself, so it can
+   be tested and so the caller decides the wording. */
+function importWatches(data, mode){
+  var raw = (data && data.watches);
+  if (!Array.isArray(raw)) throw new Error("no watch list in that file");
+
+  var clean = [], junk = 0;
+  raw.forEach(function(r){
+    var w = sanitizeWatch(r);
+    if (w) clean.push(w); else junk++;
+  });
+  if (!clean.length) throw new Error("no usable watches in that file");
+
+  var replaced = 0, added = 0, dupes = 0;
+  if (mode === "replace"){
+    replaced = S.watches.length;
+    S.watches = [];
+    S.results = [];
+  }
+
+  var have = {};
+  S.watches.forEach(function(w){ have[watchSignature(w)] = 1; });
+  clean.forEach(function(w){
+    var sig = watchSignature(w);
+    if (have[sig]){ dupes++; return; }
+    have[sig] = 1;
+    S.watches.push(w);
+    added++;
+  });
+
+  // The file may carry more load than the daily budget allows. Pause the tail
+  // rather than silently planning past the cap.
+  var paused = 0;
+  for (var i=0;i<S.watches.length;i++){
+    if (S.watches[i].active === false) continue;
+    if (plannedCalls(S.watches.slice(0, i+1)) > budgetCap()){
+      S.watches[i].active = false;
+      paused++;
+    }
+  }
+
+  if (Array.isArray(data.blocked)){
+    data.blocked.forEach(function(b){ if (!isBlocked(b)) S.blocked.push(String(b)); });
+  }
+  if (data.settings){
+    S.marketplace = data.settings.marketplace || S.marketplace;
+    S.currency = data.settings.currency || S.currency;
+  }
+  undoStash = null;
+  return { added: added, dupes: dupes, junk: junk, paused: paused, replaced: replaced };
+}
+
+function importReport(r){
+  var bits = [r.added + (r.added === 1 ? " watch added" : " watches added")];
+  if (r.replaced) bits.push(r.replaced + " replaced");
+  if (r.dupes) bits.push(r.dupes + " already had");
+  if (r.junk) bits.push(r.junk + " unreadable");
+  if (r.paused) bits.push(r.paused + " paused for the daily limit");
+  return bits.join(" · ");
+}
+
 /* ---------------- scanning ---------------- */
 function runWatch(w){
   return searchLadder(w).then(function(items){
@@ -2666,43 +2825,42 @@ $("allDeliveredBtn").onclick = function(){
 };
 
 $("exportBtn").onclick = function(){
-  var blob = new Blob([JSON.stringify({ lotwatch:1, watches:S.watches, blocked:S.blocked, settings:{
-    mode:S.mode, relay:S.relay, marketplace:S.marketplace, currency:S.currency
-  }}, null, 2)], {type:"application/json"});
-  var a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "lot-watch-backup.json";
-  a.click();
-  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  if (!S.watches.length){ toast("No watches to export"); return; }
+  downloadJson(exportPayload(S.watches),
+    "lot-watch-" + S.watches.length + "-watches-" + fileStamp() + ".json");
 };
+
+$("exportOneBtn").onclick = function(){
+  var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+  if (!w){ toast("Pick a watch on the left first"); return; }
+  var slug = String(w.label || "watch").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "watch";
+  downloadJson(exportPayload([w]), "lot-watch-" + slug + "-" + fileStamp() + ".json");
+};
+
 $("importBtn").onclick = function(){ $("importFile").click(); };
 $("importFile").onchange = function(ev){
   var f = ev.target.files[0];
   if (!f) return;
+  var mode = $("fImportMode").value;
+  // Replacing throws everything away, so it asks first.
+  if (mode === "replace" && S.watches.length &&
+      !confirm("Replace all " + S.watches.length + " of your watches with this file?")){
+    ev.target.value = "";
+    return;
+  }
   var fr = new FileReader();
   fr.onload = function(){
+    var d;
+    try { d = JSON.parse(fr.result); }
+    catch(e){ toast("That file is not valid JSON"); return; }
     try {
-      var d = JSON.parse(fr.result);
-      if (!d.watches) throw new Error("no watches in that file");
-      S.watches = d.watches;
-      if (d.blocked) S.blocked = d.blocked;
-      undoStash = null;
-      // A backup can carry more load than the budget allows; pause the tail
-      // rather than silently planning past the cap.
-      var over = 0;
-      for (var i=0;i<S.watches.length;i++){
-        var head = S.watches.slice(0, i+1);
-        if (plannedCalls(head) > budgetCap()){ S.watches[i].active = false; over++; }
-      }
-      if (d.settings){
-        S.marketplace = d.settings.marketplace || S.marketplace;
-        S.currency = d.settings.currency || S.currency;
-      }
+      var rep = importWatches(d, mode);
       save(); render(); syncSetup();
-      toast("Imported " + d.watches.length + " watches" +
-        (over ? " — " + over + " paused to stay inside the daily limit" : ""));
-    } catch(e){ toast("Could not read that file"); }
+      toast(importReport(rep));
+    } catch(e){ toast(e.message); }
   };
+  fr.onerror = function(){ toast("Could not read that file"); };
   fr.readAsText(f);
   ev.target.value = "";
 };
