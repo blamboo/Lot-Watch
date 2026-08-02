@@ -764,11 +764,23 @@ var CAT_PRESETS = [
   { id:"3365",  name:"Ancient: Roman Republic" },
   { id:"4738",  name:"Ancient: Greek" },
   { id:"3364",  name:"Ancient: Byzantine" },
-  { id:"532",   name:"Ancient: Other" }
+  { id:"532",   name:"Ancient: Other" },
+  { id:"3452",  name:"Exonumia" },
+  { id:"3454",  name:"Exonumia: Medals" },
+  { id:"3455",  name:"Exonumia: Tokens Other" },
+  { id:"259",   name:"Exonumia: Other" }
 ];
-/* Picking the Ancient parent alongside its children would search the same
-   listings repeatedly and burn budget for nothing. */
-var ANCIENT_KIDS = ["4734","4735","3365","4738","3364","532"];
+/* Picking a parent alongside its own children searches the same listings
+   repeatedly and burns budget for nothing, so warn on these pairings.
+   3455 (Tokens: Other) and 259 (Other Exonumia) are SIBLINGS, not the same
+   category — eBay lists both under Exonumia. */
+var CAT_PARENTS = {
+  "4733": ["4734","4735","3365","4738","3364","532"],
+  "3452": ["3454","3455","259"],
+  "39482": ["45134","39487"],
+  "11116": []
+};
+var ANCIENT_KIDS = CAT_PARENTS["4733"];
 function catName(id){
   var p = CAT_PRESETS.filter(function(c){ return c.id === String(id); })[0];
   if (p) return p.name;
@@ -2016,10 +2028,16 @@ $("catBoxes").onchange = function(){ updateBudgetHint(); checkCatOverlap(); };
    parent and a child searches the same listings twice at double the cost. */
 function checkCatOverlap(){
   var chosen = chosenCats();
-  var kids = ANCIENT_KIDS.filter(function(k){ return chosen.indexOf(k) >= 0; });
-  if (chosen.indexOf("4733") >= 0 && kids.length){
-    $("catHint").textContent = "Coins: Ancient already covers " +
-      kids.map(catName).join(", ") + " — untick one side to avoid paying twice.";
+  var notes = [];
+  Object.keys(CAT_PARENTS).forEach(function(parent){
+    if (chosen.indexOf(parent) < 0) return;
+    var kids = CAT_PARENTS[parent].filter(function(k){ return chosen.indexOf(k) >= 0; });
+    if (kids.length){
+      notes.push(catName(parent) + " already covers " + kids.map(catName).join(", "));
+    }
+  });
+  if (notes.length){
+    $("catHint").textContent = notes.join("; ") + " — untick one side to avoid paying twice.";
     $("catHint").style.color = "var(--gold)";
   } else if ($("catHint").style.color === "var(--gold)"){
     $("catHint").textContent = "";
