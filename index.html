@@ -605,6 +605,7 @@ var DEFAULTS = {
   marketplace:"EBAY_US", currency:"USD", sound:true,
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
+  formatRecheck:false,
   blocked:[],
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
@@ -624,6 +625,18 @@ S.watches.forEach(function(w){
   if (!w.cats || !w.cats.length) w.cats = [w.categoryId || "11116"];
   if (!w.tiers) w.tiers = {};
 });
+
+/* Listings collected before auction detection looked at bid data were matched
+   under a looser rule. Re-check them once; this only ever REMOVES rows that
+   should not have qualified, so it is safe to apply silently. */
+if (!S.formatRecheck){
+  S.results = S.results.filter(function(r){
+    var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
+    if (!w) return true;
+    return formatOk(w.format, r.item);
+  });
+  S.formatRecheck = true;
+}
 
 if (!S.shipDefaultFlipped){
   S.watches.forEach(function(w){ w.needShip = false; });
@@ -768,6 +781,7 @@ function normalise(it){
     total: (live == null || !shipKnown) ? null : live + ship,
     formats: opts,
     bids: it.bidCount != null ? it.bidCount : null,
+    hasBid: bid != null,
     endTime: it.itemEndDate || "",
     condition: it.condition || "",
     seller: (it.seller && it.seller.username) || "",
@@ -1567,10 +1581,26 @@ function unblockSeller(name){
    drops FIXED_PRICE only once a qualifying bid lands. So such a listing
    legitimately answers either filter — which reads as the filter ignoring you.
    The *_ONLY modes exclude them. */
-function formatOk(mode, formats){
-  var f = formats || [];
-  var auction = f.indexOf("AUCTION") >= 0;
-  var bin = f.indexOf("FIXED_PRICE") >= 0;
+/* buyingOptions alone is not a reliable auction signal: eBay drops FIXED_PRICE
+   from a Buy-It-Now auction only AFTER a qualifying bid, so a listing can be
+   taking bids while still reporting FIXED_PRICE. Bid data settles it. */
+function isAuction(item){
+  var f = (item && item.formats) || [];
+  if (f.indexOf("AUCTION") >= 0) return true;
+  if (item && item.bids != null) return true;      // it has a bid count
+  if (item && item.hasBid) return true;            // it has a current bid price
+  if (item && item.bidPrice != null) return true;  // older stored rows
+  return false;
+}
+function isBin(item){
+  return ((item && item.formats) || []).indexOf("FIXED_PRICE") >= 0;
+}
+
+function formatOk(mode, item){
+  // Tolerate being handed a bare formats array (older call sites and tests).
+  var it = Array.isArray(item) ? { formats: item } : (item || {});
+  var auction = isAuction(it);
+  var bin = isBin(it);
   switch (mode){
     case "AUCTION":      return auction;
     case "FIXED_PRICE":  return bin;
@@ -1716,7 +1746,7 @@ function matches(w, r){
     if (max > 0 && v > max) return false;
   }
 
-  if (!formatOk(w.format, r.formats)) return false;
+  if (!formatOk(w.format, r)) return false;
   if (w.exclude){
     var bad = w.exclude.split(",").map(function(s){ return s.trim().toLowerCase(); })
       .filter(function(s){ return s.length; });
@@ -2115,9 +2145,10 @@ function renderResults(){
 
   el.innerHTML = list.map(function(r){
     var it = r.item || {};
-    var fmts = it.formats || [];
-    var auction = fmts.indexOf("AUCTION") >= 0;
-    var bin = fmts.indexOf("FIXED_PRICE") >= 0;
+    // Same test the filter uses, so a row can never be tagged Auction while
+    // sitting inside a Buy It Now only view.
+    var auction = isAuction(it);
+    var bin = isBin(it);
     var shown = r.basis === "total" ? it.total : it.price;
     var sub = [];
     if (r.basis === "total" && it.total != null){
