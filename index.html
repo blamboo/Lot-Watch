@@ -84,6 +84,11 @@ label{display:block;font-size:12px;color:var(--muted);margin:0 0 3px}
 label.check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink);
   cursor:pointer;margin:0;user-select:none}
 label.check input{width:auto;margin:0;accent-color:var(--patina);cursor:pointer}
+.catgrid{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px}
+.catgrid label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--ink);
+  margin:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.catgrid input{width:auto;margin:0;accent-color:var(--patina)}
+textarea{resize:vertical;min-height:56px;font-size:13px;line-height:1.4}
 input:disabled{background:var(--rule-soft);color:var(--muted);cursor:not-allowed}
 input,select,textarea{
   width:100%;border:1px solid var(--rule);border-radius:2px;background:#fff;
@@ -109,7 +114,20 @@ input,select,textarea{
 #viewing{
   margin:0 0 12px;font-size:17px;font-weight:600;letter-spacing:-0.01em;
   padding-bottom:8px;border-bottom:1px solid var(--rule-soft);
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
 }
+#viewing .headest{font-family:var(--mono);font-size:12px;font-weight:400;color:var(--muted)}
+#viewing button{margin-left:auto;font-size:12px}
+.est{
+  margin-top:6px;padding-top:5px;border-top:1px dotted var(--rule);
+  font-family:var(--mono);font-size:12px;
+}
+.est b{font-size:14px}
+.est.asking b{color:var(--gold)}
+.estsub{display:block;color:var(--muted);font-size:10.5px;margin-top:1px}
+.vs{font-family:var(--mono);font-size:11px;display:block;margin-top:1px}
+.vs.under{color:var(--patina)}
+.vs.over{color:var(--strike)}
 .watch.off{opacity:.5}
 .watch h3{margin:0;font-size:14px;font-weight:600;display:flex;gap:6px;align-items:baseline}
 .watch .band{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:2px}
@@ -162,6 +180,7 @@ input,select,textarea{
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
+.lot.leaving{opacity:0;transform:translateX(14px);transition:opacity .18s ease,transform .18s ease}
 .lot.done{opacity:.55}
 .lot.done:hover{opacity:1}
 button.seen{
@@ -266,8 +285,9 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         <input id="fLabel" placeholder="1916-D Mercury dime">
       </div>
       <div class="field">
-        <label for="fQ">Search words</label>
-        <input id="fQ" placeholder="1916-D mercury dime">
+        <label for="fQ">Search phrases &mdash; one per line</label>
+        <textarea id="fQ" rows="3" placeholder="Double Parisis Philippe VI&#10;gros tournois&#10;blanc au chatel"></textarea>
+        <p class="hint" style="margin:4px 0 0">Each line is searched separately, and the results are merged.</p>
       </div>
       <div class="field">
         <label for="fMatch">How to match</label>
@@ -337,8 +357,14 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         </div>
         <div><label for="fCountry">Seller country</label><input id="fCountry" placeholder="US"></div>
       </div>
-      <div class="row field">
-        <div><label for="fCat">Category ID (optional)</label><input id="fCat" placeholder="11116"></div>
+      <div class="field">
+        <label>Categories</label>
+        <div id="catBoxes" class="catgrid"></div>
+        <div class="row" style="margin-top:6px">
+          <input id="fCatExtra" placeholder="Other IDs, comma separated">
+          <button class="btn" id="catFindBtn" style="flex:0 0 auto">Suggest</button>
+        </div>
+        <p class="hint" id="catHint" style="margin:4px 0 0"></p>
       </div>
       <p class="hint" id="budgetLine"></p>
       <p class="hint" id="budgetHint" style="margin:8px 0 0"></p>
@@ -464,6 +490,10 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
           </div>
         </div>
 
+        <p class="eyebrow" style="margin-top:18px">Value estimates</p>
+        <label class="check" style="margin-bottom:8px"><input type="checkbox" id="fUseSold"> Try sold prices first (needs eBay approval)</label>
+        <p class="note">Estimates use the median of comparable listings, not a plain average — one fantasy Buy It Now at 40&times; the real level would drag a mean up with it. <b>Sold</b> prices are what coins actually fetched; eBay gates those behind its Marketplace Insights API, which is a Limited Release restricted to approved partners. Without it, estimates come from <b>current asking prices</b>, which run higher than realised prices and are shown in gold to keep the difference visible.</p>
+
         <p class="eyebrow" style="margin-top:18px">Numista</p>
         <div class="row field" style="max-width:560px">
           <div><label for="nKey">API key</label><input id="nKey" type="password" placeholder="your Numista API key"></div>
@@ -520,7 +550,8 @@ var DEFAULTS = {
   mode:"demo", relay:"", relayKey:"", token:"", proxy:"",
   marketplace:"EBAY_US", currency:"USD", sound:true,
   watches:[], results:[], calls:0, callDay:"",
-  nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false,
+  nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
+  useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
 var S;
@@ -531,6 +562,14 @@ function save(){ store.set("lotwatch.v1", JSON.stringify(S)); }
 
 /* Unknown shipping used to hide a listing by default; now it shows one. Applied
    to existing watches because it can only reveal listings, never hide them. */
+/* Older watches carry a single q and categoryId; give them the list shape so
+   every code path can assume it. */
+S.watches.forEach(function(w){
+  if (!w.phrases || !w.phrases.length) w.phrases = w.q ? [w.q] : [];
+  if (!w.cats || !w.cats.length) w.cats = [w.categoryId || "11116"];
+  if (!w.tiers) w.tiers = {};
+});
+
 if (!S.shipDefaultFlipped){
   S.watches.forEach(function(w){ w.needShip = false; });
   S.shipDefaultFlipped = true;
@@ -589,7 +628,8 @@ var SAFETY = 0.9;               // leave headroom for manual scans and retries
 
 function dailyCost(w){
   if (!w || w.active === false) return 0;
-  return Math.ceil(1440 / Math.max(1, num(w.every, 30)));
+  // Every phrase and every category is a separate eBay request.
+  return Math.ceil(1440 / Math.max(1, num(w.every, 30))) * legCount(w);
 }
 function plannedCalls(list){
   return (list || S.watches).reduce(function(n, w){ return n + dailyCost(w); }, 0);
@@ -681,6 +721,47 @@ function normalise(it){
 }
 
 /* ---------------- building the eBay query ---------------- */
+/* ---------------- categories ---------------- */
+/* IDs confirmed against live eBay category pages rather than from memory.
+   Coins & Paper Money is a top-level category, and eBay requires the q
+   parameter alongside a top-level ID — which this app always sends. */
+var CAT_PRESETS = [
+  { id:"11116", name:"Coins & Paper Money", top:true },
+  { id:"253",   name:"Coins: US" },
+  { id:"256",   name:"Coins: World" },
+  { id:"3412",  name:"Paper Money: US" },
+  { id:"3411",  name:"Paper Money: World" },
+  { id:"39482", name:"Bullion" },
+  { id:"45134", name:"Bullion: Gold" },
+  { id:"39487", name:"Bullion: Silver" }
+];
+function catName(id){
+  var p = CAT_PRESETS.filter(function(c){ return c.id === String(id); })[0];
+  if (p) return p.name;
+  var f = (S.catsFound || {})[String(id)];
+  return f || ("Category " + id);
+}
+/* Split a comma or newline separated list into clean unique entries. */
+function splitList(s){
+  return String(s || "").split(/[,\n]/)
+    .map(function(x){ return x.trim(); })
+    .filter(function(x, i, a){ return x.length && a.indexOf(x) === i; });
+}
+function watchCats(w){
+  if (w && w.cats && w.cats.length) return w.cats.map(String);
+  // Legacy shape, or a backup imported after the load-time migration ran.
+  if (w && w.categoryId) return [String(w.categoryId)];
+  return ["11116"];
+}
+function watchPhrases(w){
+  var p = (w && w.phrases && w.phrases.length) ? w.phrases : (w && w.q ? [w.q] : []);
+  return p.filter(function(x){ return String(x).trim().length; });
+}
+/* One eBay call per phrase per category, so this is the multiplier on cost. */
+function legCount(w){
+  return Math.max(1, watchPhrases(w).length) * Math.max(1, watchCats(w).length);
+}
+
 /* ---------------- keyword handling ---------------- */
 /* eBay's q is an AND across every word, so a catalogue-style description
    ("Double Parisis - Philippe VI 2nd type 1341 1342") fails against a real
@@ -774,7 +855,7 @@ function termScore(title, q){
   return (hitCore * 2 + hitRest) / denom;
 }
 
-function buildParams(w, tier){
+function buildParams(w, tier, phrase, cat){
   var f = [];
   var min = num(w.min, 0), max = num(w.max, 0);
   if (max > 0) f.push("price:[" + min + ".." + max + "]");
@@ -788,9 +869,11 @@ function buildParams(w, tier){
   if (w.country) f.push("itemLocationCountry:" + w.country.toUpperCase());
 
   var p = new URLSearchParams();
-  var q = queryFor(w, tier);
+  var q = queryFor(phrase != null ? { q: phrase, match: w.match, tier: w.tier } : w, tier);
   if (q) p.set("q", q);
-  if (w.categoryId) p.set("category_ids", w.categoryId);
+  // eBay accepts only one category per request, so the caller loops.
+  var c = cat != null ? cat : (w.cats && w.cats[0]) || w.categoryId;
+  if (c) p.set("category_ids", String(c));
   p.set("filter", f.join(","));
   // "Any word" leans on eBay's relevance ranking; the other modes are already
   // narrow, so newest-first is more useful there.
@@ -826,9 +909,9 @@ function asJson(r, where){
   });
 }
 
-function fetchRelay(w, tier){
+function fetchRelay(w, tier, phrase, cat){
   var base = relayBase();
-  var p = buildParams(w, tier);
+  var p = buildParams(w, tier, phrase, cat);
   p.set("marketplace", S.marketplace);
   if (S.relayKey) p.set("key", S.relayKey);
   countCall();
@@ -847,8 +930,8 @@ function fetchRelay(w, tier){
     });
 }
 
-function fetchDirect(w, tier){
-  var p = buildParams(w, tier);
+function fetchDirect(w, tier, phrase, cat){
+  var p = buildParams(w, tier, phrase, cat);
   var target = "https://api.ebay.com/buy/browse/v1/item_summary/search?" + p.toString();
   var url = S.proxy ? S.proxy + encodeURIComponent(target) : target;
   countCall();
@@ -914,37 +997,76 @@ function fetchDemo(w){
   return new Promise(function(res){ setTimeout(function(){ res(out); }, 250); });
 }
 
-function search(w, tier){
+function search(w, tier, phrase, cat){
   if (S.mode === "demo") return fetchDemo(w);
   if (S.mode === "relay"){
     if (!S.relay) return Promise.reject(new Error("Add your worker URL under Connection & alerts"));
-    return fetchRelay(w, tier);
+    return fetchRelay(w, tier, phrase, cat);
   }
   if (!S.token) return Promise.reject(new Error("Add your eBay token under Connection & alerts"));
-  return fetchDirect(w, tier);
+  return fetchDirect(w, tier, phrase, cat);
 }
 
 /* Try the precise query first and broaden only if it comes back empty, then
    remember the tier that worked so later checks cost one call. */
-function searchLadder(w){
-  var tiers = tierCount(w);
-  var start = Math.min(w.tier || 0, tiers - 1);
+/* One phrase against one category, climbing the tier ladder. */
+function searchLeg(w, phrase, cat){
+  var probe = { q: phrase, match: w.match, tier: (w.tiers || {})[phrase] || 0 };
+  var tiers = tierCount(probe);
+  var start = Math.min(probe.tier, tiers - 1);
   return new Promise(function(resolve, reject){
     var i = start;
     (function attempt(){
-      search(w, i).then(function(items){
+      search(w, i, phrase, cat).then(function(items){
         if (items.length || i >= tiers - 1){
-          if (items.length && w.tier !== i){ w.tier = i; }
-          if (!items.length && start > 0){
-            // Nothing at any tier; next check starts wide rather than narrow.
-            w.tier = 0;
-          }
+          if (!w.tiers) w.tiers = {};
+          // Tiers are learned per phrase, since one phrase may need
+          // broadening while another works as typed.
+          w.tiers[phrase] = items.length ? i : 0;
           resolve(items);
           return;
         }
         i++;
         attempt();
       }).catch(reject);
+    })();
+  });
+}
+
+/* Every phrase against every category. eBay takes one category per request,
+   so this is a genuine fan-out — which is why legCount() drives the budget. */
+function searchLadder(w){
+  var phrases = watchPhrases(w);
+  var cats = watchCats(w);
+  if (!phrases.length) return Promise.resolve([]);
+  var legs = [];
+  phrases.forEach(function(p){
+    cats.forEach(function(c){ legs.push({ phrase: p, cat: c }); });
+  });
+
+  var seen = {}, out = [], firstErr = null;
+  return new Promise(function(resolve, reject){
+    var i = 0;
+    (function next(){
+      if (i >= legs.length){
+        if (!out.length && firstErr) reject(firstErr);
+        else resolve(out);
+        return;
+      }
+      var leg = legs[i++];
+      searchLeg(w, leg.phrase, leg.cat).then(function(items){
+        items.forEach(function(it){
+          if (seen[it.id]) return;   // the same listing can sit in two searches
+          seen[it.id] = 1;
+          out.push(it);
+        });
+        // Space the calls out rather than firing the whole fan at once.
+        if (i < legs.length) setTimeout(next, 350); else next();
+      }).catch(function(e){
+        // One bad phrase should not silence the rest of the watch.
+        if (!firstErr) firstErr = e;
+        if (i < legs.length) setTimeout(next, 350); else next();
+      });
     })();
   });
 }
@@ -1080,11 +1202,12 @@ function watchFromType(t, useEstimate, every){
     id: uid(),
     label: title,
     q: [issuer, title].filter(Boolean).join(" ").replace(/\s+/g," ").trim(),
+    phrases: [[issuer, title].filter(Boolean).join(" ").replace(/\s+/g," ").trim()],
     exclude: "copy, replica, reproduction, tribute",
     min: 0, max: 0,
     basis: "total", maxShip: 0, needShip: false,
     format: "both", condition: "",
-    every: mins || 60, categoryId: "11116", country: "",
+    every: mins || 60, cats: ["11116"], country: "",
     numistaId: t.id != null ? String(t.id) : null, numistaYears: years,
     active: mins !== 0, lastRun: 0, lastError: ""
   };
@@ -1195,6 +1318,137 @@ function importNumistaCsv(text){
   });
   if (pending.length) undoStash = null;
   return { added: pending.length, plan: plan };
+}
+
+/* ---------------- value estimation ---------------- */
+/* eBay coin prices are wildly skewed: one fantasy Buy It Now at 40x the real
+   level drags a plain average up with it. The median is the headline figure
+   and a trimmed mean backs it up. Both are reported with the sample size, so
+   an estimate from three listings never looks as solid as one from forty. */
+
+function median(xs){
+  if (!xs.length) return null;
+  var a = xs.slice().sort(function(x,y){ return x - y; });
+  var m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
+}
+
+/* Mean of the middle 80%, so the cheapest and dearest tail cannot dominate. */
+function trimmedMean(xs){
+  if (!xs.length) return null;
+  var a = xs.slice().sort(function(x,y){ return x - y; });
+  if (a.length < 5) return a.reduce(function(s,v){ return s+v; }, 0) / a.length;
+  var cut = Math.floor(a.length * 0.1);
+  var kept = a.slice(cut, a.length - cut);
+  return kept.reduce(function(s,v){ return s+v; }, 0) / kept.length;
+}
+
+/* Interquartile range — how tightly the market agrees with itself. */
+function quartiles(xs){
+  if (xs.length < 4) return null;
+  var a = xs.slice().sort(function(x,y){ return x - y; });
+  var q = function(p){
+    var i = (a.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i);
+    return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+  };
+  return { q1: q(0.25), q3: q(0.75) };
+}
+
+function buildEstimate(prices, source){
+  var xs = prices.filter(function(v){ return typeof v === "number" && isFinite(v) && v > 0; });
+  if (!xs.length) return null;
+  var qs = quartiles(xs);
+  return {
+    median: median(xs),
+    mean: trimmedMean(xs),
+    low: Math.min.apply(null, xs),
+    high: Math.max.apply(null, xs),
+    q1: qs ? qs.q1 : null,
+    q3: qs ? qs.q3 : null,
+    n: xs.length,
+    source: source,
+    currency: S.currency,
+    at: Date.now()
+  };
+}
+
+/* Sold comps, if eBay ever grants Marketplace Insights access. */
+function fetchSold(w){
+  if (S.mode !== "relay" || !S.relay){
+    return Promise.reject(new Error("Sold data needs the relay"));
+  }
+  var p = new URLSearchParams();
+  var q = queryFor(w, tierCount(w) - 1);
+  if (q) p.set("q", q);
+  if (w.categoryId) p.set("category_ids", w.categoryId);
+  p.set("filter", "lastSoldDate:[" +
+    new Date(Date.now() - 90*24*3600*1000).toISOString().slice(0,19) + "Z..]");
+  p.set("limit", "100");
+  p.set("marketplace", S.marketplace);
+  if (S.relayKey) p.set("key", S.relayKey);
+  countCall();
+  return fetch(relayBase() + "/sold?" + p.toString())
+    .then(function(r){ return asJson(r, "The relay"); })
+    .then(function(res){
+      if (res.status === 403){
+        S.soldDenied = true; save();
+        throw new Error("eBay has not granted this keyset sold-data access");
+      }
+      if (!res.ok) throw new Error(readErr(res.j));
+      var items = res.j.itemSales || res.j.itemSummaries || [];
+      return items.map(function(it){
+        var v = (it.lastSoldPrice && it.lastSoldPrice.value) ||
+                (it.price && it.price.value);
+        return v == null ? null : parseFloat(v);
+      }).filter(function(v){ return v != null; });
+    });
+}
+
+/* Asking prices from active listings — always available, and honestly labelled
+   as asking rather than realised. */
+function fetchAsking(w){
+  var probe = {
+    id: w.id, q: w.q, match: w.match, tier: w.tier,
+    min: 0, max: 0, basis: "item", format: "both",
+    categoryId: w.categoryId, country: w.country, condition: w.condition
+  };
+  return search(probe, Math.min(w.tier || 0, tierCount(w) - 1))
+    .then(function(items){
+      var bad = String(w.exclude || "").split(",").map(function(s){
+        return s.trim().toLowerCase();
+      }).filter(function(s){ return s.length; });
+      return items.filter(function(r){
+        if (r.price == null) return false;
+        var t = (r.title || "").toLowerCase();
+        for (var i=0;i<bad.length;i++) if (t.indexOf(bad[i]) >= 0) return false;
+        // A title that barely answers the phrase is not a comparable.
+        return termScore(r.title, w.q) >= 0.5;
+      }).map(function(r){ return r.price; });
+    });
+}
+
+/* Sold first, asking as the fallback. Stored on the watch. */
+function estimateValue(w){
+  var useSold = S.useSold && !S.soldDenied;
+  var attempt = useSold
+    ? fetchSold(w).then(function(xs){ return buildEstimate(xs, "sold"); })
+        .catch(function(){ return null; })
+    : Promise.resolve(null);
+
+  return attempt.then(function(est){
+    if (est && est.n >= 3) return est;
+    return fetchAsking(w).then(function(xs){
+      return buildEstimate(xs, "asking");
+    });
+  }).then(function(est){
+    w.est = est;
+    save();
+    return est;
+  }).catch(function(err){
+    w.estError = err && err.message ? err.message : String(err);
+    save();
+    return null;
+  });
 }
 
 /* ---------------- matching ---------------- */
@@ -1355,12 +1609,16 @@ function renderWatches(){
     var fmt = w.format === "both" ? "BIN + auction" : (w.format === "AUCTION" ? "Auction" : "Buy It Now");
     var shipNote = w.basis === "total" ? "delivered" : "item only";
     if (num(w.maxShip,0) > 0) shipNote += ", ship \u2264 " + money(w.maxShip);
+    var np = watchPhrases(w).length, nc = watchCats(w).length;
+    var scope = np + (np === 1 ? " phrase" : " phrases") + ", " +
+                nc + (nc === 1 ? " cat" : " cats");
     var last = w.lastRun ? new Date(w.lastRun).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "never";
     return '<div class="watch' + (selected === w.id ? " sel" : "") + (w.active === false ? " off" : "") +
       '" data-watch="' + w.id + '">' +
       '<h3>' + esc(w.label) + '<span class="count' + (unseen ? "" : " zero") + '">' + unseen + '</span></h3>' +
       '<div class="band">' + esc(band) + '</div>' +
-      '<div class="meta"><span>' + fmt + '</span><span>' + esc(shipNote) + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
+      '<div class="meta"><span>' + fmt + '</span><span>' + esc(shipNote) + '</span><span>' + esc(scope) + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
+      estLine(w) +
       (w.lastError ? '<div class="err">' + esc(w.lastError) + '</div>' : "") +
       '<div class="row" style="margin-top:6px">' +
         '<button class="btn ghost" data-act="scan" data-id="' + w.id + '">Scan now</button>' +
@@ -1405,6 +1663,17 @@ function refPrice(r, shown){
   return line;
 }
 
+/* How this listing sits against the watch's own value estimate. */
+function vsEstimate(r, shown){
+  var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
+  if (!w || !w.est || !w.est.median || shown == null) return "";
+  var d = (shown - w.est.median) / w.est.median * 100;
+  if (Math.abs(d) < 1) return '<span class="vs">at typical</span>';
+  var cls = d < 0 ? "under" : "over";
+  return '<span class="vs ' + cls + '">' + Math.abs(Math.round(d)) + "% " +
+    (d < 0 ? "under" : "over") + " typical</span>";
+}
+
 /* One row per watch: the cheapest listing currently inside its band. */
 function cheapestPerWatch(list){
   var best = {};
@@ -1427,6 +1696,20 @@ function unseenInScope(){
   return inScope().filter(function(r){ return !r.seen; }).length;
 }
 
+var SOURCE_LABEL = { sold: "sold in the last 90 days", asking: "current asking prices" };
+
+function estLine(w){
+  if (!w.est) return "";
+  var e = w.est;
+  var spread = (e.q1 != null && e.q3 != null)
+    ? (" · middle half " + money(e.q1) + "\u2013" + money(e.q3))
+    : (" · range " + money(e.low) + "\u2013" + money(e.high));
+  return '<div class="est' + (e.source === "asking" ? " asking" : "") + '">' +
+    '<b>' + esc(e.currency) + " " + money(e.median) + '</b> typical' +
+    '<span class="estsub">' + e.n + " listing" + (e.n === 1 ? "" : "s") + ", " +
+    esc(SOURCE_LABEL[e.source] || e.source) + esc(spread) + '</span></div>';
+}
+
 function renderViewing(){
   var el = $("viewing");
   if (!S.watches.length){ el.textContent = ""; el.style.display = "none"; return; }
@@ -1436,7 +1719,12 @@ function renderViewing(){
     return;
   }
   var w = S.watches.filter(function(x){ return x.id === selected; })[0];
-  el.textContent = w ? w.label : "";
+  if (!w){ el.textContent = ""; return; }
+  el.innerHTML = esc(w.label) +
+    (w.est ? '<span class="headest">' + esc(w.est.currency) + " " +
+      money(w.est.median) + " typical \u00b7 " + w.est.n + " " +
+      esc(SOURCE_LABEL[w.est.source] || "") + '</span>' : "") +
+    '<button class="btn ghost" id="reEstBtn">Re-estimate</button>';
 }
 
 function renderResults(){
@@ -1519,9 +1807,9 @@ function renderResults(){
       '</div>' + gauge(r) + '</div>' +
       '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
       '<span class="sub">' + esc(sub.join(" · ")) + '</span>' +
-      refPrice(r, shown) +
+      refPrice(r, shown) + vsEstimate(r, shown) +
       '<button class="seen" data-seen="' + esc(r.key) + '">' +
-        (r.seen ? "Mark unseen" : "Mark seen") + '</button>' +
+        (tab === "hits" ? "Dismiss" : (r.seen ? "Mark unseen" : "Mark seen")) + '</button>' +
       '</div></article>';
   }).join("");
 }
@@ -1544,7 +1832,7 @@ function openEditor(w){
   editingId = w ? w.id : null;
   $("editorTitle").textContent = w ? "Edit watch" : "New watch";
   $("fLabel").value = w ? w.label : "";
-  $("fQ").value = w ? w.q : "";
+  $("fQ").value = w ? watchPhrases(w).join("\n") : "";
   $("fMatch").value = (w && w.match) ? w.match : "smart";
   $("fEx").value = w ? (w.exclude || "") : "";
   $("fMin").value = w ? w.min : 0;
@@ -1557,7 +1845,8 @@ function openEditor(w){
   $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
   $("fEvery").value = w ? String(w.every) : "30";
-  $("fCat").value = w ? (w.categoryId || "") : "";
+  renderCatBoxes(w ? watchCats(w) : ["11116"]);
+  $("fCatExtra").value = "";
   $("fCountry").value = w ? (w.country || "") : "";
   $("editor").style.display = "block";
   updateBudgetHint();
@@ -1565,6 +1854,32 @@ function openEditor(w){
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
+
+/* Categories the editor is currently offering: the verified presets, plus any
+   the user typed or eBay suggested, so a custom ID gets a tick box too. */
+function editorCatList(){
+  var ids = CAT_PRESETS.map(function(c){ return c.id; });
+  Object.keys(S.catsFound || {}).forEach(function(id){
+    if (ids.indexOf(id) < 0) ids.push(id);
+  });
+  splitList($("fCatExtra") ? $("fCatExtra").value : "").forEach(function(id){
+    if (ids.indexOf(id) < 0) ids.push(id);
+  });
+  return ids;
+}
+function renderCatBoxes(selected){
+  var chosen = (selected || []).map(String);
+  $("catBoxes").innerHTML = editorCatList().map(function(id){
+    return '<label><input type="checkbox" class="catbox" value="' + esc(id) + '"' +
+      (chosen.indexOf(id) >= 0 ? " checked" : "") + '> ' + esc(catName(id)) + "</label>";
+  }).join("");
+}
+function chosenCats(){
+  var out = [];
+  var boxes = document.querySelectorAll(".catbox");
+  for (var i=0;i<boxes.length;i++) if (boxes[i].checked) out.push(boxes[i].value);
+  return out;
+}
 
 /* The ceiling and the checkbox are two views of one value: max 0 means no
    ceiling. Typing an amount clears the checkbox; ticking it clears the amount. */
@@ -1597,18 +1912,57 @@ function updateQueryPreview(){
     el.textContent = "eBay receives: " + queryFor({ q: raw, match: mode }, 0);
   }
 }
-$("fQ").oninput = updateQueryPreview;
+$("fQ").oninput = function(){ updateQueryPreview(); updateBudgetHint(); };
+$("fCatExtra").oninput = function(){
+  renderCatBoxes(chosenCats().concat(splitList($("fCatExtra").value)));
+  updateBudgetHint();
+};
+$("catBoxes").onchange = updateBudgetHint;
+
+/* Ask eBay which categories the results actually fall into, rather than
+   shipping a hardcoded list that goes stale. */
+$("catFindBtn").onclick = function(){
+  var phrases = splitList($("fQ").value.replace(/,/g, "\n"));
+  if (!phrases.length){ toast("Type a search phrase first"); return; }
+  if (S.mode === "demo"){ toast("Category suggestions need a live connection"); return; }
+  $("catHint").textContent = "Asking eBay\u2026";
+  var p = buildParams({ min:0, max:0, format:"both", match:"smart" }, 0, phrases[0], "11116");
+  p.set("fieldgroups", "CATEGORY_REFINEMENTS");
+  p.set("limit", "1");
+  p.set("marketplace", S.marketplace);
+  if (S.relayKey) p.set("key", S.relayKey);
+  countCall();
+  fetch(relayBase() + "/search?" + p.toString())
+    .then(function(r){ return asJson(r, "The relay"); })
+    .then(function(res){
+      var dist = (res.j.refinement && res.j.refinement.categoryDistributions) || [];
+      if (!dist.length){ $("catHint").textContent = "eBay suggested no subcategories for that."; return; }
+      if (!S.catsFound) S.catsFound = {};
+      dist.slice(0, 12).forEach(function(d){
+        if (d.categoryId) S.catsFound[String(d.categoryId)] = d.categoryName || ("Category " + d.categoryId);
+      });
+      save();
+      renderCatBoxes(chosenCats());
+      $("catHint").textContent = "Added " + Math.min(dist.length, 12) + " categories eBay found for that phrase.";
+    })
+    .catch(function(e){ $("catHint").textContent = e.message; });
+};
 $("fMatch").onchange = updateQueryPreview;
 
 /* Show the cost of the interval being chosen, before the save is attempted. */
 function updateBudgetHint(){
   var every = parseInt($("fEvery").value, 10) || 30;
-  var cost = Math.ceil(1440 / every);
+  var phrases = Math.max(1, splitList($("fQ").value.replace(/,/g, "\n")).length);
+  var cats = Math.max(1, chosenCats().concat(splitList($("fCatExtra").value)).length);
+  var legs = phrases * cats;
+  var cost = Math.ceil(1440 / every) * legs;
   var others = S.watches.filter(function(x){ return x.id !== editingId; });
   var after = plannedCalls(others) + cost;
   var cap = budgetCap();
   var el = $("budgetHint");
-  el.textContent = "This watch costs " + cost + " searches a day · " +
+  el.textContent = phrases + (phrases === 1 ? " phrase × " : " phrases × ") +
+    cats + (cats === 1 ? " category" : " categories") +
+    " = " + legs + " searches per check · " + cost + " a day · " +
     after + " of " + cap + " planned" +
     (after > cap ? " — over the limit" : "");
   el.style.color = after > cap ? "var(--strike)" : "";
@@ -1616,17 +1970,20 @@ function updateBudgetHint(){
 $("fEvery").onchange = updateBudgetHint;
 
 function saveWatch(){
-  var q = $("fQ").value.trim();
-  var label = $("fLabel").value.trim() || q;
-  if (!q && !$("fCat").value.trim()){
-    toast("Add search words or a category ID");
+  var phrases = splitList($("fQ").value.replace(/,/g, "\n"));
+  var cats = chosenCats().concat(splitList($("fCatExtra").value))
+    .filter(function(x, i, a){ return a.indexOf(x) === i; });
+  if (!cats.length) cats = ["11116"];
+  var label = $("fLabel").value.trim() || phrases[0] || "";
+  if (!phrases.length){
+    toast("Add at least one search phrase");
     return;
   }
   var w = {
     id: editingId || uid(),
-    label: label, q: q,
+    label: label, q: phrases[0],
     match: $("fMatch").value,
-    tier: 0,
+    tier: 0, tiers: {},
     exclude: $("fEx").value.trim(),
     min: num($("fMin").value, 0),
     max: $("fUnlimited").checked ? 0 : num($("fMax").value, 0),
@@ -1636,7 +1993,8 @@ function saveWatch(){
     format: $("fFormat").value,
     condition: $("fCond").value,
     every: parseInt($("fEvery").value, 10),
-    categoryId: $("fCat").value.trim(),
+    cats: cats,
+    phrases: phrases,
     country: $("fCountry").value.trim(),
     active: true, lastRun: 0, lastError: ""
   };
@@ -1659,6 +2017,8 @@ function saveWatch(){
   }
   selected = w.id;
   save(); closeEditor(); render();
+  // Value estimate for the newly added coin.
+  estimateValue(w).then(function(){ render(); });
   if (running) runWatch(w).then(function(){ save(); render(); });
 }
 
@@ -1749,6 +2109,21 @@ $("tabAll").onclick = function(){ setTab("all"); };
 $("tabCheap").onclick = function(){ setTab("cheap"); };
 /* Marking one listing seen. On the New tab the row would vanish under the
    cursor, so it is left in place until the next render instead. */
+/* Marking one listing seen. On the New tab the row leaves the list; on the
+   other tabs it stays and dims, since those exist to show everything. */
+$("viewing").onclick = function(ev){
+  if (!ev.target.closest || !ev.target.closest("#reEstBtn")) return;
+  var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+  if (!w){ toast("Pick a watch first"); return; }
+  toast("Estimating from eBay\u2026");
+  estimateValue(w).then(function(est){
+    render();
+    toast(est ? ("Typical " + est.currency + " " + money(est.median) +
+                 " from " + est.n + " listings")
+              : ("Could not estimate: " + (w.estError || "no comparable listings")));
+  });
+};
+
 $("results").onclick = function(ev){
   var b = ev.target.closest("button[data-seen]");
   if (!b) return;
@@ -1757,8 +2132,23 @@ $("results").onclick = function(ev){
   if (!r) return;
   r.seen = !r.seen;
   save();
-  b.textContent = r.seen ? "Mark unseen" : "Mark seen";
+
   var row = b.closest("article");
+
+  if (tab === "hits" && r.seen){
+    // Fade it out first so the rows below do not jump under the cursor.
+    if (row){
+      row.className = "lot leaving";
+      setTimeout(function(){ render(); }, 180);
+    } else {
+      render();
+    }
+    $("hitCount").textContent = "(" + unseenInScope() + ")";
+    renderWatches();
+    return;
+  }
+
+  b.textContent = r.seen ? "Mark unseen" : "Mark seen";
   if (row) row.className = "lot" + (r.seen ? " done" : "");
   renderWatches();
   $("hitCount").textContent = "(" + unseenInScope() + ")";
@@ -2000,6 +2390,12 @@ bindCfg("fRelay","relay"); bindCfg("fRelayKey","relayKey");
 bindCfg("fToken","token"); bindCfg("fProxy","proxy");
 bindCfg("fMarket","marketplace"); bindCfg("fCurrency","currency");
 
+$("fUseSold").onchange = function(){
+  S.useSold = $("fUseSold").checked;
+  if (S.useSold) S.soldDenied = false;  // let the user retry after approval
+  save();
+};
+
 $("notifyBtn").onclick = function(){
   if (!window.Notification){ toast("This browser has no desktop alerts"); return; }
   Notification.requestPermission().then(function(p){
@@ -2022,6 +2418,7 @@ function syncSetup(){
   $("fRelay").value = S.relay; $("fRelayKey").value = S.relayKey;
   $("fToken").value = S.token; $("fProxy").value = S.proxy;
   $("fMarket").value = S.marketplace; $("fCurrency").value = S.currency;
+  $("fUseSold").checked = !!S.useSold;
   $("nKey").value = S.nKey; $("nUser").value = S.nUser;
   $("nToken").value = S.nToken; $("nGrade").value = S.nGrade;
   $("nQuota").textContent = (S.nCallMonth === nMonth() ? S.nCalls : 0) + " Numista calls this month";
