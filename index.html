@@ -177,6 +177,21 @@ input,select,textarea{
 .tag.sample{border-color:var(--strike);color:var(--strike)}
 .tag.noship{border-color:var(--gold);color:var(--gold)}
 .tag.partial{border-color:var(--muted);color:var(--muted);font-style:italic}
+.tag.seller{display:inline-flex;align-items:center;gap:4px}
+.blockbtn{
+  border:none;background:none;color:var(--muted);cursor:pointer;padding:0 0 0 2px;
+  font-size:13px;line-height:1;font-family:var(--sans);
+}
+.blockbtn:hover{color:var(--strike)}
+.btn.ghost.move{padding:2px 5px;font-family:var(--mono);line-height:1}
+.blocklist{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.blockchip{
+  display:inline-flex;align-items:center;gap:5px;border:1px solid var(--rule);
+  border-radius:2px;padding:2px 6px;font-size:12px;background:var(--ground);
+}
+.blockchip button{border:none;background:none;color:var(--muted);cursor:pointer;
+  padding:0;font-size:13px;line-height:1;font-family:var(--sans)}
+.blockchip button:hover{color:var(--patina)}
 .sample{margin:4px 0 0;font-size:12px;color:var(--strike)}
 
 /* Numista reference price sits beside the eBay figure */
@@ -380,6 +395,14 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     </div>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
+    <p class="eyebrow">Blocked sellers <span id="blockCount" class="hint" style="margin:0"></span></p>
+    <div class="row">
+      <input id="fBlockAdd" placeholder="seller username">
+      <button class="btn" id="blockAddBtn" style="flex:0 0 auto">Block</button>
+    </div>
+    <div id="blockList" class="blocklist"></div>
+
+    <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
     <p class="eyebrow">From Numista</p>
     <div class="row">
       <button class="btn" id="nWishBtn">Wish list</button>
@@ -551,6 +574,7 @@ var DEFAULTS = {
   marketplace:"EBAY_US", currency:"USD", sound:true,
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
+  blocked:[],
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -733,8 +757,18 @@ var CAT_PRESETS = [
   { id:"3411",  name:"Paper Money: World" },
   { id:"39482", name:"Bullion" },
   { id:"45134", name:"Bullion: Gold" },
-  { id:"39487", name:"Bullion: Silver" }
+  { id:"39487", name:"Bullion: Silver" },
+  { id:"4733",  name:"Coins: Ancient" },
+  { id:"4734",  name:"Ancient: Roman Imperial" },
+  { id:"4735",  name:"Ancient: Roman Provincial" },
+  { id:"3365",  name:"Ancient: Roman Republic" },
+  { id:"4738",  name:"Ancient: Greek" },
+  { id:"3364",  name:"Ancient: Byzantine" },
+  { id:"532",   name:"Ancient: Other" }
 ];
+/* Picking the Ancient parent alongside its children would search the same
+   listings repeatedly and burn budget for nothing. */
+var ANCIENT_KIDS = ["4734","4735","3365","4738","3364","532"];
 function catName(id){
   var p = CAT_PRESETS.filter(function(c){ return c.id === String(id); })[0];
   if (p) return p.name;
@@ -1452,9 +1486,34 @@ function estimateValue(w){
 }
 
 /* ---------------- matching ---------------- */
+/* Seller blocking. eBay usernames are case-insensitive for our purposes, so
+   compare lowercased. */
+function isBlocked(name){
+  if (!name) return false;
+  var n = String(name).toLowerCase();
+  return (S.blocked || []).some(function(b){ return String(b).toLowerCase() === n; });
+}
+function blockSeller(name){
+  if (!name || isBlocked(name)) return 0;
+  S.blocked.push(String(name));
+  // Drop anything already collected from them, otherwise blocking would only
+  // affect future scans and the rows you were looking at would stay.
+  var before = S.results.length;
+  S.results = S.results.filter(function(r){ return !isBlocked(r.item && r.item.seller); });
+  save();
+  return before - S.results.length;
+}
+function unblockSeller(name){
+  S.blocked = (S.blocked || []).filter(function(b){
+    return String(b).toLowerCase() !== String(name).toLowerCase();
+  });
+  save();
+}
+
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
+  if (isBlocked(r.seller)) return false;
   var min = num(w.min, 0), max = num(w.max, 0);
   var cap = num(w.maxShip, 0);
 
@@ -1582,6 +1641,21 @@ function alertNew(w, n){
 /* ---------------- rendering ---------------- */
 /* One watch is in view at a time. Keep the selection pointing at something
    real, and pick the first watch when there is nothing selected yet. */
+/* Move a watch up or down in the rail. Order is the array order, so this is
+   just a swap plus a save. */
+function moveWatch(id, delta){
+  var i = -1;
+  for (var k=0;k<S.watches.length;k++) if (S.watches[k].id === id) i = k;
+  if (i < 0) return false;
+  var j = i + delta;
+  if (j < 0 || j >= S.watches.length) return false;
+  var tmp = S.watches[i];
+  S.watches[i] = S.watches[j];
+  S.watches[j] = tmp;
+  save();
+  return true;
+}
+
 function ensureSelection(){
   if (!S.watches.length){ selected = null; return; }
   if (selected === ALL) return;
@@ -1622,6 +1696,8 @@ function renderWatches(){
       (w.lastError ? '<div class="err">' + esc(w.lastError) + '</div>' : "") +
       '<div class="row" style="margin-top:6px">' +
         '<button class="btn ghost" data-act="scan" data-id="' + w.id + '">Scan now</button>' +
+        '<button class="btn ghost move" data-act="up" data-id="' + w.id + '" title="Move up">\u2191</button>' +
+        '<button class="btn ghost move" data-act="down" data-id="' + w.id + '" title="Move down">\u2193</button>' +
         '<button class="btn ghost" data-act="toggle" data-id="' + w.id + '">' + (w.active === false ? "Resume" : "Pause") + '</button>' +
         '<button class="btn ghost" data-act="edit" data-id="' + w.id + '">Edit</button>' +
         '<button class="btn ghost danger" data-act="del" data-id="' + w.id + '">Delete</button>' +
@@ -1708,6 +1784,17 @@ function estLine(w){
     '<b>' + esc(e.currency) + " " + money(e.median) + '</b> typical' +
     '<span class="estsub">' + e.n + " listing" + (e.n === 1 ? "" : "s") + ", " +
     esc(SOURCE_LABEL[e.source] || e.source) + esc(spread) + '</span></div>';
+}
+
+function renderBlocked(){
+  var list = S.blocked || [];
+  $("blockCount").textContent = list.length ? "(" + list.length + ")" : "";
+  $("blockList").innerHTML = list.length
+    ? list.map(function(b){
+        return '<span class="blockchip">' + esc(b) +
+          '<button data-unblock="' + esc(b) + '" title="Unblock">\u21ba</button></span>';
+      }).join("")
+    : '<span class="hint">None. Use the \u00d7 beside a seller name to block them.</span>';
 }
 
 function renderViewing(){
@@ -1803,7 +1890,11 @@ function renderResults(){
         (bin ? '<span class="tag bin">Buy It Now</span>' : "") +
         (it.condition ? '<span class="tag">' + esc(it.condition) + '</span>' : "") +
         '<span class="tag">' + esc(r.watchLabel) + '</span>' +
-        (it.seller ? '<span class="tag">' + esc(it.seller) + (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</span>' : "") +
+        (it.seller
+          ? '<span class="tag seller">' + esc(it.seller) +
+            (it.feedback ? " " + esc(it.feedback) + "%" : "") +
+            '<button class="blockbtn" data-block="' + esc(it.seller) + '" title="Block this seller">\u00d7</button></span>'
+          : "") +
       '</div>' + gauge(r) + '</div>' +
       '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
       '<span class="sub">' + esc(sub.join(" · ")) + '</span>' +
@@ -1816,6 +1907,7 @@ function renderResults(){
 
 function render(){
   ensureSelection();
+  renderBlocked();
   renderWatches();
   renderResults();
   renderClearBtn();
@@ -1851,6 +1943,7 @@ function openEditor(w){
   $("editor").style.display = "block";
   updateBudgetHint();
   updateQueryPreview();
+  checkCatOverlap();
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
@@ -1917,7 +2010,22 @@ $("fCatExtra").oninput = function(){
   renderCatBoxes(chosenCats().concat(splitList($("fCatExtra").value)));
   updateBudgetHint();
 };
-$("catBoxes").onchange = updateBudgetHint;
+$("catBoxes").onchange = function(){ updateBudgetHint(); checkCatOverlap(); };
+
+/* Coins: Ancient contains the six Ancient subcategories, so ticking both the
+   parent and a child searches the same listings twice at double the cost. */
+function checkCatOverlap(){
+  var chosen = chosenCats();
+  var kids = ANCIENT_KIDS.filter(function(k){ return chosen.indexOf(k) >= 0; });
+  if (chosen.indexOf("4733") >= 0 && kids.length){
+    $("catHint").textContent = "Coins: Ancient already covers " +
+      kids.map(catName).join(", ") + " — untick one side to avoid paying twice.";
+    $("catHint").style.color = "var(--gold)";
+  } else if ($("catHint").style.color === "var(--gold)"){
+    $("catHint").textContent = "";
+    $("catHint").style.color = "";
+  }
+}
 
 /* Ask eBay which categories the results actually fall into, rather than
    shipping a hardcoded list that goes stale. */
@@ -2125,6 +2233,14 @@ $("viewing").onclick = function(ev){
 };
 
 $("results").onclick = function(ev){
+  var blk = ev.target.closest("button[data-block]");
+  if (blk){
+    var who = blk.getAttribute("data-block");
+    var dropped = blockSeller(who);
+    render();
+    toast("Blocked " + who + (dropped ? " \u2014 removed " + dropped + " listing" + (dropped === 1 ? "" : "s") : ""));
+    return;
+  }
   var b = ev.target.closest("button[data-seen]");
   if (!b) return;
   var key = b.getAttribute("data-seen");
@@ -2180,6 +2296,10 @@ $("watchList").onclick = function(ev){
       });
       return;
     }
+    if (act === "up" || act === "down"){
+      if (moveWatch(id, act === "up" ? -1 : 1)) render();
+      return;
+    }
     if (act === "edit") openEditor(w);
     if (act === "toggle"){
       if (w.active === false){
@@ -2233,7 +2353,7 @@ $("allDeliveredBtn").onclick = function(){
 };
 
 $("exportBtn").onclick = function(){
-  var blob = new Blob([JSON.stringify({ lotwatch:1, watches:S.watches, settings:{
+  var blob = new Blob([JSON.stringify({ lotwatch:1, watches:S.watches, blocked:S.blocked, settings:{
     mode:S.mode, relay:S.relay, marketplace:S.marketplace, currency:S.currency
   }}, null, 2)], {type:"application/json"});
   var a = document.createElement("a");
@@ -2252,6 +2372,7 @@ $("importFile").onchange = function(ev){
       var d = JSON.parse(fr.result);
       if (!d.watches) throw new Error("no watches in that file");
       S.watches = d.watches;
+      if (d.blocked) S.blocked = d.blocked;
       undoStash = null;
       // A backup can carry more load than the budget allows; pause the tail
       // rather than silently planning past the cap.
@@ -2288,6 +2409,25 @@ $("relayTestBtn").onclick = function(){
       toast("Relay works — eBay returned " + items.length + " listings");
     })
     .catch(function(e){ toast(e.message); });
+};
+
+$("blockList").onclick = function(ev){
+  var b = ev.target.closest("button[data-unblock]");
+  if (!b) return;
+  var who = b.getAttribute("data-unblock");
+  unblockSeller(who);
+  render();
+  toast("Unblocked " + who + " \u2014 their listings return on the next scan");
+};
+
+$("blockAddBtn").onclick = function(){
+  var who = $("fBlockAdd").value.trim();
+  if (!who){ toast("Type a seller username first"); return; }
+  if (isBlocked(who)){ toast(who + " is already blocked"); return; }
+  var dropped = blockSeller(who);
+  $("fBlockAdd").value = "";
+  render();
+  toast("Blocked " + who + (dropped ? " \u2014 removed " + dropped + " listing" + (dropped === 1 ? "" : "s") : ""));
 };
 
 /* ---------------- Numista wiring ---------------- */
