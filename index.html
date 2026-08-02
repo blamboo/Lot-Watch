@@ -416,6 +416,14 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     </div>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
+    <p class="eyebrow">Dismissed <span id="dismissCount" class="hint" style="margin:0"></span></p>
+    <div class="row">
+      <button class="btn" id="restoreDismissBtn">Restore all</button>
+      <button class="btn" id="restoreWatchDismissBtn">Restore this watch</button>
+    </div>
+    <p class="hint" style="margin-top:5px">Dismissed listings never return on a later scan.</p>
+
+    <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
     <p class="eyebrow">Blocked sellers <span id="blockCount" class="hint" style="margin:0"></span></p>
     <div class="row">
       <input id="fBlockAdd" placeholder="seller username">
@@ -620,7 +628,7 @@ var DEFAULTS = {
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
   formatRecheck:false,
-  blocked:[],
+  blocked:[], dismissed:{},
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -1845,6 +1853,7 @@ function exportPayload(list){
       };
     }),
     blocked: S.blocked || [],
+    dismissed: S.dismissed || {},
     settings: { marketplace: S.marketplace, currency: S.currency }
   };
 }
@@ -1901,6 +1910,16 @@ function importWatches(data, mode){
     }
   }
 
+  // Keyed by eBay itemId, so these stay meaningful across an import even though
+  // every watch gets a fresh id. Merge rather than replace: a shared list should
+  // add its author's dismissals, not wipe yours.
+  if (data.dismissed && typeof data.dismissed === "object"){
+    if (!S.dismissed) S.dismissed = {};
+    Object.keys(data.dismissed).forEach(function(k){
+      if (!S.dismissed[k]) S.dismissed[k] = data.dismissed[k];
+    });
+    pruneDismissed();
+  }
   if (Array.isArray(data.blocked)){
     data.blocked.forEach(function(b){ if (!isBlocked(b)) S.blocked.push(String(b)); });
   }
@@ -1921,6 +1940,67 @@ function importReport(r){
   return bits.join(" · ");
 }
 
+/* ---------------- dismissed listings ---------------- */
+/* Dismissal must NOT live on the result object. Results are pruned in seven
+   places — the 600-row cap, a watch edit, a seller block, a watch delete, the
+   format re-check, clear-all, replace-on-import — and every one of those used
+   to erase the dismissal, so the listing came back as fresh on the next scan.
+   This store is keyed by the same watchId|itemId and survives all of them. */
+/* Keyed by eBay's itemId, NOT watchId|itemId. Two reasons: a listing you have
+   dismissed should stay gone even if a second watch also matches it, and the
+   key has to survive export/import, where every watch is issued a fresh id.
+   The originating watch is kept as the value so "Restore this watch" works. */
+function itemIdOf(x){
+  if (!x) return "";
+  if (typeof x === "string") return x.indexOf("|") > 0 && x.split("|").length === 2
+    ? x.split("|")[1] : x;          // tolerate an old watchId|itemId key
+  return String(x.id || "");
+}
+/* x is the item (or an id string). legacyKey is the old watchId|itemId form,
+   still present in stores written before the rekey — it is an EXTRA place to
+   look, never a replacement for the itemId. */
+function isDismissed(x, legacyKey){
+  var d = S.dismissed || {};
+  var id = itemIdOf(x);
+  if (id && d[id]) return true;
+  if (legacyKey && d[legacyKey]) return true;
+  return typeof x === "string" && !!d[x];
+}
+function dismissKey(x, watchId){
+  if (!S.dismissed) S.dismissed = {};
+  var id = itemIdOf(x);
+  if (!id) return;
+  S.dismissed[id] = { t: Date.now(), w: watchId || "" };
+  pruneDismissed();
+}
+function undismissKey(x){
+  if (!S.dismissed) return;
+  var id = itemIdOf(x);
+  if (id) delete S.dismissed[id];
+  if (typeof x === "string") delete S.dismissed[x];
+}
+function dismissTime(v){ return (v && v.t) ? v.t : (typeof v === "number" ? v : 0); }
+
+/* Keep the store from growing without bound. Entries expire after a year —
+   an eBay listing is long gone by then — and a hard cap drops the oldest
+   first if someone dismisses enormously more than that. */
+var DISMISS_TTL = 365*24*3600*1000;
+var DISMISS_MAX = 20000;
+function pruneDismissed(){
+  var d = S.dismissed || {};
+  var keys = Object.keys(d);
+  var now = Date.now();
+  keys.forEach(function(k){
+    var t = dismissTime(d[k]);
+    if (!t || now - t > DISMISS_TTL) delete d[k];
+  });
+  keys = Object.keys(d);
+  if (keys.length > DISMISS_MAX){
+    keys.sort(function(a,b){ return dismissTime(d[a]) - dismissTime(d[b]); });
+    keys.slice(0, keys.length - DISMISS_MAX).forEach(function(k){ delete d[k]; });
+  }
+}
+
 /* ---------------- scanning ---------------- */
 function runWatch(w){
   return searchLadder(w).then(function(items){
@@ -1930,6 +2010,7 @@ function runWatch(w){
     items.forEach(function(r){
       if (!matches(w, r)) return;
       var key = w.id + "|" + r.id;
+      if (isDismissed(r, key)) return;         // dismissed for good
       if (S.results.some(function(x){ return x.key === key; })) return;
       S.results.unshift({
         key: key, watchId: w.id, watchLabel: w.label,
@@ -2160,6 +2241,21 @@ function estLine(w){
     esc(SOURCE_LABEL[e.source] || e.source) + esc(spread) + '</span></div>';
 }
 
+function dismissedCount(){ return Object.keys(S.dismissed || {}).length; }
+function dismissedForWatch(id){
+  var d = S.dismissed || {};
+  return Object.keys(d).filter(function(k){
+    return d[k] && d[k].w === id;
+  });
+}
+function renderDismissed(){
+  var n = dismissedCount();
+  $("dismissCount").textContent = n ? "(" + n + ")" : "";
+  $("restoreDismissBtn").disabled = !n;
+  var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+  $("restoreWatchDismissBtn").disabled = !w || !dismissedForWatch(w.id).length;
+}
+
 function renderBlocked(){
   var list = S.blocked || [];
   $("blockCount").textContent = list.length ? "(" + list.length + ")" : "";
@@ -2312,6 +2408,9 @@ function renderResults(){
     if (!w) return true;
     return formatOk(w.format, r.item);
   });
+  // Belt and braces, per the format-filter lesson: enforce dismissal at render
+  // as well as at scan time, so a dismissed row can never sit on screen.
+  list = list.filter(function(r){ return !(tab === "hits" && isDismissed(r.item, r.key)); });
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
   if (selected && selected !== ALL){
     list = list.filter(function(r){ return r.watchId === selected; });
@@ -2409,6 +2508,7 @@ function renderResults(){
 
 function render(){
   ensureSelection();
+  renderDismissed();
   renderBlocked();
   renderWatches();
   renderResults();
@@ -2766,6 +2866,9 @@ $("results").onclick = function(ev){
   var r = S.results.filter(function(x){ return x.key === key; })[0];
   if (!r) return;
   r.seen = !r.seen;
+  // Record the dismissal outside the results array, so pruning the results
+  // can never resurrect it. Un-marking lifts the block again.
+  if (r.seen) dismissKey(r.item, r.watchId); else undismissKey(r.item);
   save();
 
   var row = b.closest("article");
@@ -2835,6 +2938,8 @@ $("watchList").onclick = function(ev){
     if (act === "del"){
       S.watches = S.watches.filter(function(x){ return x.id !== id; });
       S.results = S.results.filter(function(r){ return r.watchId !== id; });
+      // The watch is gone, so its dismissals can never apply again.
+      dismissedForWatch(id).forEach(function(k){ delete S.dismissed[k]; });
       if (selected === id) selected = null;
       save(); render();
     }
@@ -2965,6 +3070,28 @@ $("clearFacetsBtn").onclick = function(){
   facet.type = "all";
   $("fFind").value = "";
   renderResults();
+};
+
+$("restoreDismissBtn").onclick = function(){
+  var n = dismissedCount();
+  if (!n) return;
+  if (!confirm("Restore all " + n + " dismissed listings? They will reappear on the next scan.")) return;
+  S.dismissed = {};
+  // The records themselves were pruned long ago; they come back on the next scan.
+  S.results.forEach(function(r){ r.seen = false; });
+  save(); render();
+  toast("Restored " + n + " dismissed listing" + (n === 1 ? "" : "s"));
+};
+
+$("restoreWatchDismissBtn").onclick = function(){
+  var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+  if (!w) return;
+  var keys = dismissedForWatch(w.id);
+  if (!keys.length) return;
+  keys.forEach(function(k){ delete S.dismissed[k]; });
+  S.results.forEach(function(r){ if (r.watchId === w.id) r.seen = false; });
+  save(); render();
+  toast("Restored " + keys.length + " for " + w.label);
 };
 
 $("blockList").onclick = function(ev){
