@@ -361,6 +361,27 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
         </div>
       </div>
       <div class="row field">
+        <div><label for="fYearFrom">Year from</label>
+          <input id="fYearFrom" placeholder="any — or 100 BC"></div>
+        <div><label for="fYearTo">Year to</label>
+          <input id="fYearTo" placeholder="any — e.g. 1900"></div>
+      </div>
+      <div class="row field">
+        <div><label for="fYearMode">Listings with several years</label>
+          <select id="fYearMode">
+            <option value="any">Keep if any year fits</option>
+            <option value="all">Keep only if every year fits</option>
+          </select>
+        </div>
+        <div><label for="fNoYear">If no year is shown</label>
+          <select id="fNoYear">
+            <option value="keep">Show it anyway</option>
+            <option value="skip">Skip the listing</option>
+          </select>
+        </div>
+      </div>
+      <p class="hint" id="yearHint" style="margin:-4px 0 9px"></p>
+      <div class="row field">
         <div>
           <label for="fFormat">Listing type</label>
           <select id="fFormat">
@@ -1739,6 +1760,43 @@ function itemText(it){
   return [(it && it.title) || "", (it && it.desc) || ""].join(" ");
 }
 
+/* ---------------- year range ---------------- */
+/* Accepts "1900", "100 BC", "-100", "AD 50", or blank for open-ended. Returns
+   null when there is no usable number, which means "no bound". */
+function parseYearInput(v){
+  var t = String(v == null ? "" : v).trim();
+  if (!t) return null;
+  var bc = /b\.?\s?c\.?e?\.?/i.test(t);
+  var m = t.match(/-?\d{1,4}/);
+  if (!m) return null;
+  var n = parseInt(m[0], 10);
+  if (isNaN(n) || n === 0) return null;
+  if (bc) n = -Math.abs(n);
+  if (n > 2100 || n < -3000) return null;
+  return n;
+}
+
+/* Does this listing sit inside the watch's year window?
+   `all` mode is what keeps a mixed lot containing a modern coin out. */
+function yearOk(w, item){
+  var from = w.yearFrom == null ? null : num(w.yearFrom, null);
+  var to   = w.yearTo   == null ? null : num(w.yearTo, null);
+  if (from == null && to == null) return true;
+
+  var years = extractYears(itemText(item));
+  if (!years.length){
+    // Ancient listings frequently carry no date at all ("Constantine AE3
+    // follis"), so hiding them is opt-in rather than the default.
+    return w.noYear !== "skip";
+  }
+  var inRange = function(y){
+    if (from != null && y < from) return false;
+    if (to != null && y > to) return false;
+    return true;
+  };
+  return w.yearMode === "all" ? years.every(inRange) : years.some(inRange);
+}
+
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
@@ -1769,6 +1827,7 @@ function matches(w, r){
   }
 
   if (!formatOk(w.format, r)) return false;
+  if (!yearOk(w, r)) return false;
   if (w.exclude){
     var bad = w.exclude.split(",").map(function(s){ return s.trim().toLowerCase(); })
       .filter(function(s){ return s.length; });
@@ -1818,6 +1877,10 @@ function sanitizeWatch(raw){
     max: Math.max(0, num(raw.max, 0)),
     basis: raw.basis === "item" ? "item" : "total",
     maxShip: Math.max(0, num(raw.maxShip, 0)),
+    yearFrom: parseYearInput(raw.yearFrom),
+    yearTo: parseYearInput(raw.yearTo),
+    yearMode: raw.yearMode === "all" ? "all" : "any",
+    noYear: raw.noYear === "skip" ? "skip" : "keep",
     needShip: raw.needShip === true,
     format: FORMATS.indexOf(raw.format) >= 0 ? raw.format : "both",
     condition: (raw.condition === "NEW" || raw.condition === "USED") ? raw.condition : "",
@@ -1848,6 +1911,7 @@ function exportPayload(list){
         label: w.label, phrases: watchPhrases(w), cats: watchCats(w),
         match: w.match, exclude: w.exclude, min: w.min, max: w.max,
         basis: w.basis, maxShip: w.maxShip, needShip: w.needShip,
+        yearFrom: w.yearFrom, yearTo: w.yearTo, yearMode: w.yearMode, noYear: w.noYear,
         format: w.format, condition: w.condition, every: w.every,
         country: w.country, numistaId: w.numistaId, active: w.active
       };
@@ -2138,6 +2202,10 @@ function renderWatches(){
     var fmt = FMT_LABEL[w.format] || "BIN + auction";
     var shipNote = w.basis === "total" ? "delivered" : "item only";
     if (num(w.maxShip,0) > 0) shipNote += ", ship \u2264 " + money(w.maxShip);
+    if (w.yearFrom != null || w.yearTo != null){
+      shipNote += ", " + (w.yearFrom != null ? yearLabel(w.yearFrom) : "any") +
+                  "\u2013" + (w.yearTo != null ? yearLabel(w.yearTo) : "any");
+    }
     var np = watchPhrases(w).length, nc = watchCats(w).length;
     var scope = np + (np === 1 ? " phrase" : " phrases") + ", " +
                 nc + (nc === 1 ? " cat" : " cats");
@@ -2340,7 +2408,7 @@ function renderFacets(){
   // exactly what the list will show.
   pool = pool.filter(function(r){
     var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
-    return !w || formatOk(w.format, r.item);
+    return !w || (formatOk(w.format, r.item) && yearOk(w, r.item));
   });
 
   var nBin = 0, nAuc = 0;
@@ -2406,7 +2474,7 @@ function renderResults(){
   list = list.filter(function(r){
     var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
     if (!w) return true;
-    return formatOk(w.format, r.item);
+    return formatOk(w.format, r.item) && yearOk(w, r.item);
   });
   // Belt and braces, per the format-filter lesson: enforce dismissal at render
   // as well as at scan time, so a dismissed row can never sit on screen.
@@ -2535,6 +2603,10 @@ function openEditor(w){
   syncUnlimited();
   $("fBasis").value = w ? w.basis : "total";
   $("fMaxShip").value = w && w.maxShip ? w.maxShip : "";
+  $("fYearFrom").value = (w && w.yearFrom != null) ? yearLabel(w.yearFrom) : "";
+  $("fYearTo").value = (w && w.yearTo != null) ? yearLabel(w.yearTo) : "";
+  $("fYearMode").value = (w && w.yearMode === "all") ? "all" : "any";
+  $("fNoYear").value = (w && w.noYear === "skip") ? "skip" : "keep";
   $("fNeedShip").value = (w && w.needShip === true) ? "skip" : "keep";
   $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
@@ -2546,6 +2618,7 @@ function openEditor(w){
   updateBudgetHint();
   updateQueryPreview();
   checkCatOverlap();
+  checkYearRange();
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
@@ -2608,6 +2681,26 @@ function updateQueryPreview(){
   }
 }
 $("fQ").oninput = function(){ updateQueryPreview(); updateBudgetHint(); };
+
+/* A range typed the wrong way round silently matches nothing, so say so. */
+function checkYearRange(){
+  var from = parseYearInput($("fYearFrom").value);
+  var to = parseYearInput($("fYearTo").value);
+  var el = $("yearHint");
+  if (from != null && to != null && from > to){
+    el.textContent = "From is later than To — nothing can match. " +
+      "Remember BC years count backwards: 100 BC is earlier than AD 100.";
+    el.style.color = "var(--strike)";
+  } else if (from != null || to != null){
+    el.textContent = "Keeping " + (from != null ? yearLabel(from) : "anything") +
+      " to " + (to != null ? yearLabel(to) : "anything") + ".";
+    el.style.color = "";
+  } else {
+    el.textContent = "";
+  }
+}
+$("fYearFrom").oninput = checkYearRange;
+$("fYearTo").oninput = checkYearRange;
 $("fCatExtra").oninput = function(){
   renderCatBoxes(chosenCats().concat(splitList($("fCatExtra").value)));
   updateBudgetHint();
@@ -2705,6 +2798,10 @@ function saveWatch(){
     max: $("fUnlimited").checked ? 0 : num($("fMax").value, 0),
     basis: $("fBasis").value,
     maxShip: num($("fMaxShip").value, 0),
+    yearFrom: parseYearInput($("fYearFrom").value),
+    yearTo: parseYearInput($("fYearTo").value),
+    yearMode: $("fYearMode").value === "all" ? "all" : "any",
+    noYear: $("fNoYear").value === "skip" ? "skip" : "keep",
     needShip: $("fNeedShip").value === "skip",
     format: $("fFormat").value,
     condition: $("fCond").value,
