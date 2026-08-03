@@ -600,6 +600,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     <div class="toolbar">
       <div class="tabs">
         <button class="tab on" id="tabHits">New <span id="hitCount">(0)</span></button>
+        <button class="tab" id="tabSeen">Seen <span id="seenCount">(0)</span></button>
         <button class="tab" id="tabAll">Everything in range</button>
         <button class="tab" id="tabCheap">Cheapest per item</button>
       </div>
@@ -771,7 +772,7 @@ var DEFAULTS = {
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
   formatRecheck:false,
-  blocked:[], dismissed:{}, bellRead:{},
+  blocked:[], dismissed:{}, bellRead:{}, sellerMoved:{},
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -830,6 +831,9 @@ S.watches.forEach(function(w){
 /* Listings collected before auction detection looked at bid data were matched
    under a looser rule. Re-check them once; this only ever REMOVES rows that
    should not have qualified, so it is safe to apply silently. */
+/* Resolve any overlap left by an earlier version or a hand-edited watch. */
+syncSellerHome();
+
 if (!S.formatRecheck){
   S.results = S.results.filter(function(r){
     var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
@@ -1830,19 +1834,78 @@ function watchSeller(name){
   // Following someone you had blocked is contradictory — the newer intent wins.
   if (isBlocked(who)) unblockSeller(who);
   w.lastRun = 0;   // pick them up on the next tick rather than waiting
-  return { watch: w, created: created, already: false };
+  // Pull them out of any other watch so the same dealer is not searched twice.
+  var pulled = syncSellerHome();
+  return { watch: w, created: created, already: false, pulled: pulled };
 }
 
+/* A seller should live in exactly ONE place. Once someone is on the Watched
+   sellers list, they are pulled out of every other watch so the same dealer is
+   not searched twice. Where they came from is recorded in S.sellerMoved so
+   removing them from the watched list puts them back exactly where they were. */
+function isHomeSeller(name){
+  var home = sellerWatch();
+  if (!home) return false;
+  var who = String(name || "").toLowerCase();
+  return watchSellers(home).some(function(x){ return String(x).toLowerCase() === who; });
+}
+
+function syncSellerHome(){
+  var home = sellerWatch();
+  if (!home) return 0;
+  if (!S.sellerMoved) S.sellerMoved = {};
+  var moved = 0;
+  watchSellers(home).forEach(function(who){
+    var k = who.toLowerCase();
+    S.watches.forEach(function(w){
+      if (w.id === home.id || !w.sellers || !w.sellers.length) return;
+      var before = w.sellers.length;
+      w.sellers = w.sellers.filter(function(x){ return String(x).toLowerCase() !== k; });
+      if (w.sellers.length < before){
+        if (!S.sellerMoved[k]) S.sellerMoved[k] = [];
+        if (S.sellerMoved[k].indexOf(w.id) < 0) S.sellerMoved[k].push(w.id);
+        moved += before - w.sellers.length;
+      }
+    });
+  });
+  return moved;
+}
+
+/* Remove from the watched list and hand them back to whichever watches they
+   were taken from. Returns {removed, restored}. */
 function unwatchSeller(name){
   var who = String(name || "").toLowerCase();
-  var n = 0;
-  S.watches.forEach(function(w){
-    if (!w.sellers) return;
-    var before = w.sellers.length;
-    w.sellers = w.sellers.filter(function(x){ return String(x).toLowerCase() !== who; });
-    n += before - w.sellers.length;
+  var home = sellerWatch();
+  var removed = 0;
+
+  if (home && home.sellers){
+    var before = home.sellers.length;
+    home.sellers = home.sellers.filter(function(x){ return String(x).toLowerCase() !== who; });
+    removed += before - home.sellers.length;
+  }
+
+  var restored = 0;
+  var origins = (S.sellerMoved || {})[who] || [];
+  origins.forEach(function(id){
+    var w = S.watches.filter(function(x){ return x.id === id; })[0];
+    if (!w) return;                       // that watch is gone; nothing to restore to
+    if (!w.sellers) w.sellers = [];
+    var have = w.sellers.some(function(x){ return String(x).toLowerCase() === who; });
+    if (!have){ w.sellers.push(name); restored++; }
   });
-  return n;
+  if (S.sellerMoved) delete S.sellerMoved[who];
+
+  // If they were never on the home list, fall back to the old behaviour and
+  // clear them from wherever they are.
+  if (!removed && !restored){
+    S.watches.forEach(function(w){
+      if (!w.sellers) return;
+      var b = w.sellers.length;
+      w.sellers = w.sellers.filter(function(x){ return String(x).toLowerCase() !== who; });
+      removed += b - w.sellers.length;
+    });
+  }
+  return { removed: removed, restored: restored };
 }
 
 function isWatchedSeller(name){
@@ -2174,6 +2237,7 @@ function exportPayload(list){
     }),
     blocked: S.blocked || [],
     dismissed: S.dismissed || {},
+    sellerMoved: S.sellerMoved || {},
     settings: { marketplace: S.marketplace, currency: S.currency }
   };
 }
@@ -2247,6 +2311,12 @@ function importWatches(data, mode){
     S.marketplace = data.settings.marketplace || S.marketplace;
     S.currency = data.settings.currency || S.currency;
   }
+  // Origin records only mean something alongside the watch ids they name, so
+  // they travel only on a replace of your own backup.
+  if (mode === "replace" && data.sellerMoved && typeof data.sellerMoved === "object"){
+    S.sellerMoved = data.sellerMoved;
+  }
+  syncSellerHome();
   undoStash = null;
   return { added: added, dupes: dupes, junk: junk, paused: paused, replaced: replaced };
 }
@@ -2558,6 +2628,11 @@ function inScope(){
 function unseenInScope(){
   return inScope().filter(function(r){ return !r.seen; }).length;
 }
+function seenInScope(){
+  return inScope().filter(function(r){
+    return r.seen && !isDismissed(r.item, r.key);
+  }).length;
+}
 
 var SOURCE_LABEL = { sold: "sold in the last 90 days", asking: "current asking prices" };
 
@@ -2868,10 +2943,10 @@ function renderFacets(){
           (sc[k] === 0 ? " empty" : "") +
           '" data-seller="' + esc(k) + '">' + esc(disp[k]) +
           '<span class="n">' + sc[k] + '</span></button>' +
-          '<button class="watchbtn' + (isWatchedSeller(disp[k]) ? " on" : "") +
+          '<button class="watchbtn' + (isHomeSeller(disp[k]) ? " on" : "") +
             '" data-watchseller="' + esc(disp[k]) + '" title="' +
-            (isWatchedSeller(disp[k]) ? "Stop watching" : "Watch this seller") + '">' +
-            (isWatchedSeller(disp[k]) ? "\u2605" : "\u2606") + '</button></span>';
+            (isHomeSeller(disp[k]) ? "Stop watching" : "Watch this seller") + '">' +
+            (isHomeSeller(disp[k]) ? "\u2605" : "\u2606") + '</button></span>';
       }).join("") +
       (sellerKeys.length > SLIMIT
         ? '<button class="facetmore" id="sellerMoreBtn">' +
@@ -2924,6 +2999,10 @@ function renderPager(total, pages){
 }
 
 function renderResults(){
+  // Counts live here rather than in render(), so a tab switch or any other
+  // redraw of the list cannot leave them stale.
+  $("hitCount").textContent = "(" + unseenInScope() + ")";
+  $("seenCount").textContent = "(" + seenInScope() + ")";
   renderViewing();
   renderFacets();
   var list = S.results.slice();
@@ -2940,6 +3019,12 @@ function renderResults(){
   // as well as at scan time, so a dismissed row can never sit on screen.
   list = list.filter(function(r){ return !(tab === "hits" && isDismissed(r.item, r.key)); });
   if (tab === "hits") list = list.filter(function(r){ return !r.seen; });
+  // The Seen tab is for listings you looked at and set aside — NOT for the ones
+  // you dismissed. Those are a deliberate decision with their own restore, and
+  // mixing them in would make this tab a dumping ground.
+  if (tab === "seen"){
+    list = list.filter(function(r){ return r.seen && !isDismissed(r.item, r.key); });
+  }
   if (selected && selected !== ALL){
     list = list.filter(function(r){ return r.watchId === selected; });
   }
@@ -2973,7 +3058,9 @@ function renderResults(){
           ? "No listings match those filters. Press Clear filters to see everything."
           : (tab === "hits"
               ? "Nothing new for this watch. Pick another on the left, or All watches."
-              : "No listings inside this watch's price band yet.")) +
+              : tab === "seen"
+                ? "Nothing set aside yet. Listings you mark seen collect here."
+                : "No listings inside this watch's price band yet.")) +
       '</div>';
     return;
   }
@@ -3035,10 +3122,10 @@ function renderResults(){
             '<button class="sellerbtn" data-onlyseller="' + esc(it.seller) +
               '" title="Show only this seller">' + esc(it.seller) +
               (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</button>' +
-            '<button class="watchbtn' + (isWatchedSeller(it.seller) ? " on" : "") +
+            '<button class="watchbtn' + (isHomeSeller(it.seller) ? " on" : "") +
               '" data-watchseller="' + esc(it.seller) + '" title="' +
-              (isWatchedSeller(it.seller) ? "Stop watching this seller" : "Watch this seller") +
-              '">' + (isWatchedSeller(it.seller) ? "\u2605" : "\u2606") + '</button>' +
+              (isHomeSeller(it.seller) ? "Stop watching this seller" : "Watch this seller") +
+              '">' + (isHomeSeller(it.seller) ? "\u2605" : "\u2606") + '</button>' +
             '<button class="blockbtn" data-block="' + esc(it.seller) + '" title="Block this seller">\u00d7</button></span>'
           : "") +
       '</div>' + gauge(r) + '</div>' +
@@ -3064,7 +3151,6 @@ function render(){
   renderWatches();
   renderResults();
   renderClearBtn();
-  $("hitCount").textContent = "(" + unseenInScope() + ")";
   var used = (S.callDay === today() ? S.calls : 0);
   var planned = plannedCalls();
   $("budget").textContent = used + " used · " + planned + "/day planned";
@@ -3349,7 +3435,12 @@ function saveWatch(){
     S.watches.push(w);
   }
   selected = w.id;
+  // Typing a seller into a watch who is already on the Watched sellers list
+  // must not create a duplicate search.
+  var pulled = syncSellerHome();
   save(); closeEditor(); render();
+  if (pulled) toast(pulled + " seller" + (pulled === 1 ? "" : "s") +
+    " already on \"" + SELLER_WATCH_LABEL + "\" \u2014 left there");
   // Value estimate for the newly added coin.
   estimateValue(w).then(function(){ render(); });
   if (running) runWatch(w).then(function(){ save(); render(); });
@@ -3434,10 +3525,13 @@ function setTab(which){
   tab = which;
   page = 0;
   $("tabHits").className = "tab" + (which === "hits" ? " on" : "");
+  $("tabSeen").className = "tab" + (which === "seen" ? " on" : "");
   $("tabAll").className = "tab" + (which === "all" ? " on" : "");
   $("tabCheap").className = "tab" + (which === "cheap" ? " on" : "");
+  $("clearHitsBtn").textContent = which === "seen" ? "Move these back to New" : "Mark these seen";
   renderResults();
 }
+$("tabSeen").onclick = function(){ setTab("seen"); };
 $("tabHits").onclick = function(){ setTab("hits"); };
 $("tabAll").onclick = function(){ setTab("all"); };
 $("tabCheap").onclick = function(){ setTab("cheap"); };
@@ -3472,10 +3566,12 @@ $("results").onclick = function(ev){
   var star = ev.target.closest("button[data-watchseller]");
   if (star){
     var who = star.getAttribute("data-watchseller");
-    if (isWatchedSeller(who)){
-      var n = unwatchSeller(who);
+    if (isHomeSeller(who)){
+      var u = unwatchSeller(who);
       save(); render();
-      toast(n ? ("No longer watching " + who) : "");
+      toast("No longer watching " + who + (u.restored
+        ? " \u2014 returned to " + u.restored + " watch" + (u.restored === 1 ? "" : "es")
+        : ""));
     } else {
       var res = watchSeller(who);
       save(); render();
@@ -3483,7 +3579,9 @@ $("results").onclick = function(ev){
         ? ("Already watching " + who)
         : "Watching " + who + (res.created
             ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch"
-            : " \u2014 added to \"" + res.watch.label + "\""));
+            : " \u2014 added to \"" + res.watch.label + "\"") +
+          (res.pulled ? "; removed from " + res.pulled + " other watch" +
+            (res.pulled === 1 ? "" : "es") : ""));
     }
     return;
   }
@@ -3509,7 +3607,7 @@ $("results").onclick = function(ev){
     // Dismiss is the permanent one: hides it AND stops it returning on a scan.
     r.seen = true;
     dismissKey(r.item, r.watchId);
-    leaving = true;
+    leaving = true;   // dismissed rows belong on neither New nor Seen
   } else if (und){
     // Undismiss only lifts the permanent block; it stays marked seen.
     undismissKey(r.item);
@@ -3517,7 +3615,9 @@ $("results").onclick = function(ev){
     // Plain seen. Reversible, and deliberately does NOT dismiss — being done
     // looking at something is not the same as never wanting to see it again.
     r.seen = !r.seen;
-    leaving = r.seen && tab === "hits";
+    // The row leaves whichever tab it no longer belongs to: seen rows leave
+    // New, unseen rows leave Seen.
+    leaving = (r.seen && tab === "hits") || (!r.seen && tab === "seen");
   }
   save();
 
@@ -3531,6 +3631,7 @@ $("results").onclick = function(ev){
       render();
     }
     $("hitCount").textContent = "(" + unseenInScope() + ")";
+  $("seenCount").textContent = "(" + seenInScope() + ")";
     renderWatches();
     renderBell();
     return;
@@ -3539,9 +3640,18 @@ $("results").onclick = function(ev){
 };
 
 $("clearHitsBtn").onclick = function(){
-  // Scoped to the watch in view — clearing hits for watches you cannot see
-  // would silently discard alerts you never looked at.
+  // Scoped to the watch in view — acting on watches you cannot see would
+  // silently change things you never looked at.
   var n = 0;
+  if (tab === "seen"){
+    // On the Seen tab the sensible bulk action is the reverse one.
+    inScope().forEach(function(r){
+      if (r.seen && !isDismissed(r.item, r.key)){ r.seen = false; n++; }
+    });
+    save(); render();
+    toast(n ? ("Moved " + n + " back to New") : "Nothing to move back");
+    return;
+  }
   inScope().forEach(function(r){ if (!r.seen){ r.seen = true; n++; } });
   save(); render();
   toast(n ? ("Marked " + n + " seen") : "Nothing new to mark");
@@ -3586,6 +3696,20 @@ $("watchList").onclick = function(ev){
       S.results = S.results.filter(function(r){ return r.watchId !== id; });
       // The watch is gone, so its dismissals can never apply again.
       dismissedForWatch(id).forEach(function(k){ delete S.dismissed[k]; });
+      // If that was the Watched sellers list, give its sellers back to the
+      // watches they were originally pulled from rather than losing them.
+      watchSellers(w).forEach(function(who){
+        var k2 = String(who).toLowerCase();
+        ((S.sellerMoved || {})[k2] || []).forEach(function(oid){
+          var ow = S.watches.filter(function(x){ return x.id === oid; })[0];
+          if (!ow) return;
+          if (!ow.sellers) ow.sellers = [];
+          if (!ow.sellers.some(function(x){ return String(x).toLowerCase() === k2; })){
+            ow.sellers.push(who);
+          }
+        });
+        if (S.sellerMoved) delete S.sellerMoved[k2];
+      });
       if (selected === id) selected = null;
       save(); render();
     }
@@ -3767,13 +3891,17 @@ $("sellerFacet").onclick = function(ev){
   var star = ev.target.closest("button[data-watchseller]");
   if (star){
     var who = star.getAttribute("data-watchseller");
-    if (isWatchedSeller(who)){
-      unwatchSeller(who); save(); render();
-      toast("No longer watching " + who);
+    if (isHomeSeller(who)){
+      var u2 = unwatchSeller(who); save(); render();
+      toast("No longer watching " + who + (u2.restored
+        ? " \u2014 returned to " + u2.restored + " watch" + (u2.restored === 1 ? "" : "es")
+        : ""));
     } else {
-      var res = watchSeller(who); save(); render();
-      toast("Watching " + who + (res.created
-        ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch" : ""));
+      var res2 = watchSeller(who); save(); render();
+      toast("Watching " + who + (res2.created
+        ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch" : "") +
+        (res2.pulled ? "; removed from " + res2.pulled + " other watch" +
+          (res2.pulled === 1 ? "" : "es") : ""));
     }
     return;
   }
@@ -3868,7 +3996,7 @@ $("blockList").onclick = function(ev){
 $("watchAddBtn").onclick = function(){
   var who = $("fBlockAdd").value.trim();
   if (!who){ toast("Type a seller username first"); return; }
-  if (isWatchedSeller(who)){ toast("Already watching " + who); return; }
+  if (isHomeSeller(who)){ toast("Already watching " + who); return; }
   var res = watchSeller(who);
   $("fBlockAdd").value = "";
   selected = res.watch.id;
