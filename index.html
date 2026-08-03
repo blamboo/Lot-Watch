@@ -379,7 +379,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     <div class="bellpanel" id="bellPanel" hidden>
       <div class="bellhead">
         <span>Newest listings</span>
-        <button class="btn ghost" id="bellSeenBtn">Mark all seen</button>
+        <button class="btn ghost" id="bellSeenBtn">Clear notifications</button>
       </div>
       <div id="bellList"></div>
       <div class="bellfoot"><button class="btn ghost" id="bellAllBtn">See everything new</button></div>
@@ -532,6 +532,9 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <button class="btn" id="restoreWatchDismissBtn">Restore this watch</button>
     </div>
     <p class="hint" style="margin-top:5px">Dismissed listings never return on a later scan.</p>
+    <div class="row" style="margin-top:6px">
+      <button class="btn" id="markAllNewBtn">Mark everything new again</button>
+    </div>
     <p class="hint" id="storeInfo" style="margin-top:3px"></p>
 
     <hr style="border:none;border-top:1px solid var(--rule);margin:16px 0">
@@ -750,7 +753,7 @@ var DEFAULTS = {
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
   formatRecheck:false,
-  blocked:[], dismissed:{},
+  blocked:[], dismissed:{}, bellRead:{},
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -2515,9 +2518,33 @@ function sinceLabel(ms){
 /* Deliberately global, not scoped to the watch in view: the New tab count is
    per-watch since round 11, so the bell is what tells him something arrived
    on a watch he is not currently looking at. */
+/* Notification-read state is SEPARATE from `seen`. Clearing the bell must not
+   touch the working list — reading a notification is not the same as being
+   done with a listing. Keyed by itemId so it survives result pruning. */
+function bellRead(r){
+  var id = itemIdOf(r && r.item);
+  return !!(id && S.bellRead && S.bellRead[id]);
+}
+function markBellRead(r){
+  var id = itemIdOf(r && r.item);
+  if (!id) return;
+  if (!S.bellRead) S.bellRead = {};
+  S.bellRead[id] = Date.now();
+}
+function pruneBellRead(){
+  var b = S.bellRead || {}, keys = Object.keys(b), now = Date.now();
+  keys.forEach(function(k){ if (now - b[k] > 30*24*3600*1000) delete b[k]; });
+  keys = Object.keys(b);
+  if (keys.length > 20000){
+    keys.sort(function(x,y){ return b[x] - b[y]; });
+    keys.slice(0, keys.length - 20000).forEach(function(k){ delete b[k]; });
+  }
+}
+
 function bellItems(){
   var out = S.results.filter(function(r){
     if (r.seen) return false;
+    if (bellRead(r)) return false;
     if (isDismissed(r.item, r.key)) return false;
     var w = S.watches.filter(function(x){ return x.id === r.watchId; })[0];
     if (!w) return true;
@@ -2558,6 +2585,13 @@ function renderDismissed(){
   $("dismissCount").textContent = n ? "(" + n + ")" : "";
   $("storeInfo").textContent = S.results.length + " listings stored \u00b7 " + storageKB() + " KB";
   $("restoreDismissBtn").disabled = !n;
+  var hidden = S.results.filter(function(r){
+    return r.seen || isDismissed(r.item, r.key) || bellRead(r);
+  }).length;
+  $("markAllNewBtn").disabled = !hidden;
+  $("markAllNewBtn").textContent = hidden
+    ? "Mark " + hidden + " hidden listing" + (hidden === 1 ? "" : "s") + " new again"
+    : "Mark everything new again";
   var w = S.watches.filter(function(x){ return x.id === selected; })[0];
   $("restoreWatchDismissBtn").disabled = !w || !dismissedForWatch(w.id).length;
 }
@@ -3537,9 +3571,9 @@ $("bellPanel").onclick = function(ev){
   if (!row) return;
   var r = S.results.filter(function(x){ return x.key === row.getAttribute("data-bellkey"); })[0];
   if (!r) return;
-  // Opening it counts as having seen it, so the badge stays honest.
-  r.seen = true;
-  dismissKey(r.item, r.watchId);
+  // Only clears the NOTIFICATION. The listing stays new in the list and is
+  // not dismissed — opening something to look at it is not deciding about it.
+  markBellRead(r);
   save();
   if (r.item.url) window.open(r.item.url, "_blank", "noopener");
   render();
@@ -3547,9 +3581,12 @@ $("bellPanel").onclick = function(ev){
 $("bellSeenBtn").onclick = function(ev){
   ev.stopPropagation();
   var n = 0;
-  bellItems().forEach(function(r){ r.seen = true; n++; });
+  // Clears the bell ONLY. The listings stay exactly where they are.
+  bellItems().forEach(function(r){ markBellRead(r); n++; });
+  pruneBellRead();
   save(); render();
-  toast(n ? ("Marked " + n + " seen") : "Nothing new");
+  toast(n ? ("Cleared " + n + " notification" + (n === 1 ? "" : "s") +
+             " \u2014 listings kept") : "Nothing new");
 };
 $("bellAllBtn").onclick = function(ev){
   ev.stopPropagation();
@@ -3624,6 +3661,22 @@ $("clearFacetsBtn").onclick = function(){
   page = 0;
   $("fFind").value = "";
   renderResults();
+};
+
+/* Recovery for the whole store: puts every listing back on the New tab,
+   whether it was marked seen, dismissed, or only read in the bell. Available
+   whenever anything is hidden, not just when something was dismissed. */
+$("markAllNewBtn").onclick = function(){
+  var hidden = S.results.filter(function(r){
+    return r.seen || isDismissed(r.item, r.key) || bellRead(r);
+  }).length;
+  if (!hidden){ toast("Everything is already showing as new"); return; }
+  if (!confirm("Put all " + hidden + " hidden listings back on the New tab?")) return;
+  S.results.forEach(function(r){ r.seen = false; });
+  S.dismissed = {};
+  S.bellRead = {};
+  save(); render();
+  toast("Restored " + hidden + " listing" + (hidden === 1 ? "" : "s"));
 };
 
 $("restoreDismissBtn").onclick = function(){
