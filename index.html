@@ -94,6 +94,12 @@ a{color:var(--ink)}
   display:flex;gap:8px;flex-wrap:wrap}
 .bellrow .p{font-family:var(--mono);font-size:13px;font-weight:600;white-space:nowrap}
 .bellempty{padding:20px 12px;text-align:center;color:var(--muted);font-size:13px}
+.bellrow .p{display:flex;align-items:center;gap:6px}
+.bellx{
+  border:none;background:none;color:var(--muted);cursor:pointer;padding:0 0 0 2px;
+  font-size:15px;line-height:1;font-family:var(--sans);
+}
+.bellx:hover{color:var(--strike)}
 
 /* ---------- layout ---------- */
 .wrap{display:grid;grid-template-columns:330px 1fr;gap:0;align-items:start}
@@ -227,6 +233,12 @@ input,select,textarea{
   font-size:13px;line-height:1;font-family:var(--sans);
 }
 .blockbtn:hover{color:var(--strike)}
+.watchbtn{
+  border:none;background:none;color:var(--muted);cursor:pointer;padding:0 0 0 2px;
+  font-size:12px;line-height:1;font-family:var(--sans);
+}
+.watchbtn:hover{color:var(--gold)}
+.watchbtn.on{color:var(--gold)}
 .sellerbtn{
   border:none;background:none;padding:0;cursor:pointer;color:inherit;
   font:inherit;letter-spacing:inherit;text-transform:inherit;
@@ -257,6 +269,7 @@ input,select,textarea{
 .chip.on .n{color:#cfe3dc}
 .chip.bc{border-style:dashed}
 .chip.empty{opacity:.45;border-style:dashed}
+.chipwrap{display:inline-flex;align-items:center;gap:2px}
 .chip.empty:hover{opacity:.75}
 .pager{
   display:flex;gap:4px;align-items:center;flex-wrap:wrap;
@@ -289,6 +302,10 @@ button.seen{
   font-family:var(--sans);
 }
 button.seen:hover{border-color:var(--ink);color:var(--ink)}
+.rowacts{display:flex;flex-direction:column;gap:3px;align-items:flex-end;margin-top:7px}
+.rowacts button.seen{margin:0}
+button.seen.drop:hover{border-color:var(--strike);color:var(--strike)}
+button.seen.undo{border-color:var(--gold);color:var(--gold)}
 .money .ref{display:block;margin-top:5px;padding-top:4px;border-top:1px solid var(--rule-soft);
   font-size:11px;color:var(--muted)}
 .money .ref b{font-weight:600;color:var(--ink)}
@@ -541,6 +558,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
     <p class="eyebrow">Blocked sellers <span id="blockCount" class="hint" style="margin:0"></span></p>
     <div class="row">
       <input id="fBlockAdd" placeholder="seller username">
+      <button class="btn" id="watchAddBtn" style="flex:0 0 auto">Watch</button>
       <button class="btn" id="blockAddBtn" style="flex:0 0 auto">Block</button>
     </div>
     <div id="blockList" class="blocklist"></div>
@@ -1761,6 +1779,79 @@ function isBlocked(name){
   var n = String(name).toLowerCase();
   return (S.blocked || []).some(function(b){ return String(b).toLowerCase() === n; });
 }
+/* Add a seller to a watch. If no seller-based watch exists yet, create one —
+   he should not have to build a watch by hand just to follow a dealer he
+   spotted. A subcategory is used, never top-level 11116, because eBay rejects
+   a keyword-free search against a top-level category. */
+var SELLER_WATCH_LABEL = "Watched sellers";
+
+function sellerWatch(){
+  // Prefer an existing watch that is seller-driven and keyword-free.
+  var candidates = S.watches.filter(function(w){
+    return watchSellers(w).length &&
+           !watchPhrases(w).filter(function(x){ return x.length; }).length;
+  });
+  var named = candidates.filter(function(w){ return w.label === SELLER_WATCH_LABEL; })[0];
+  return named || candidates[0] || null;
+}
+
+function createSellerWatch(){
+  var w = {
+    id: uid(),
+    label: SELLER_WATCH_LABEL,
+    q: "", phrases: [], sellers: [],
+    // 253 + 256 cover US and world coins without the top-level restriction.
+    cats: ["253", "256"],
+    match: "smart", tier: 0, tiers: {},
+    exclude: "",
+    min: 0, max: 0,
+    basis: "total", maxShip: 0, needShip: false,
+    yearFrom: null, yearTo: null, yearMode: "any", noYear: "keep",
+    format: "both", condition: "",
+    every: 30, country: "",
+    active: true, lastRun: 0, lastError: ""
+  };
+  S.watches.push(w);
+  return w;
+}
+
+/* Returns {watch, created, already} so the caller can word the message. */
+function watchSeller(name){
+  var who = String(name || "").trim();
+  if (!who) return null;
+  var w = sellerWatch(), created = false;
+  if (!w){ w = createSellerWatch(); created = true; }
+  if (!w.sellers) w.sellers = [];
+  var have = w.sellers.some(function(x){
+    return String(x).toLowerCase() === who.toLowerCase();
+  });
+  if (have) return { watch: w, created: created, already: true };
+  w.sellers.push(who);
+  // Following someone you had blocked is contradictory — the newer intent wins.
+  if (isBlocked(who)) unblockSeller(who);
+  w.lastRun = 0;   // pick them up on the next tick rather than waiting
+  return { watch: w, created: created, already: false };
+}
+
+function unwatchSeller(name){
+  var who = String(name || "").toLowerCase();
+  var n = 0;
+  S.watches.forEach(function(w){
+    if (!w.sellers) return;
+    var before = w.sellers.length;
+    w.sellers = w.sellers.filter(function(x){ return String(x).toLowerCase() !== who; });
+    n += before - w.sellers.length;
+  });
+  return n;
+}
+
+function isWatchedSeller(name){
+  var who = String(name || "").toLowerCase();
+  return S.watches.some(function(w){
+    return watchSellers(w).some(function(x){ return String(x).toLowerCase() === who; });
+  });
+}
+
 function blockSeller(name){
   if (!name || isBlocked(name)) return 0;
   S.blocked.push(String(name));
@@ -2573,7 +2664,9 @@ function renderBell(){
             '<span>' + esc(sinceLabel(listedAt(r))) + '</span>' +
             (isAuction(it) ? '<span>auction</span>' : "") +
           '</div></div>' +
-          '<span class="p">' + esc(it.currency) + " " + money(price) + '</span>' +
+          '<span class="p">' + esc(it.currency) + " " + money(price) +
+            '<button class="bellx" data-bellclear="' + esc(r.key) +
+              '" title="Clear this notification">\u00d7</button></span>' +
           '</div>';
       }).join("") +
       (n > 15 ? '<div class="bellempty">' + (n - 15) + ' more</div>' : "")
@@ -2771,10 +2864,14 @@ function renderFacets(){
       '<button class="chip' + (Object.keys(facet.sellers).length ? "" : " on") +
         '" data-seller="__all__">All<span class="n">' + pool.length + '</span></button>' +
       sShown.map(function(k){
-        return '<button class="chip' + (facet.sellers[k] ? " on" : "") +
+        return '<span class="chipwrap"><button class="chip' + (facet.sellers[k] ? " on" : "") +
           (sc[k] === 0 ? " empty" : "") +
           '" data-seller="' + esc(k) + '">' + esc(disp[k]) +
-          '<span class="n">' + sc[k] + '</span></button>';
+          '<span class="n">' + sc[k] + '</span></button>' +
+          '<button class="watchbtn' + (isWatchedSeller(disp[k]) ? " on" : "") +
+            '" data-watchseller="' + esc(disp[k]) + '" title="' +
+            (isWatchedSeller(disp[k]) ? "Stop watching" : "Watch this seller") + '">' +
+            (isWatchedSeller(disp[k]) ? "\u2605" : "\u2606") + '</button></span>';
       }).join("") +
       (sellerKeys.length > SLIMIT
         ? '<button class="facetmore" id="sellerMoreBtn">' +
@@ -2938,14 +3035,23 @@ function renderResults(){
             '<button class="sellerbtn" data-onlyseller="' + esc(it.seller) +
               '" title="Show only this seller">' + esc(it.seller) +
               (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</button>' +
+            '<button class="watchbtn' + (isWatchedSeller(it.seller) ? " on" : "") +
+              '" data-watchseller="' + esc(it.seller) + '" title="' +
+              (isWatchedSeller(it.seller) ? "Stop watching this seller" : "Watch this seller") +
+              '">' + (isWatchedSeller(it.seller) ? "\u2605" : "\u2606") + '</button>' +
             '<button class="blockbtn" data-block="' + esc(it.seller) + '" title="Block this seller">\u00d7</button></span>'
           : "") +
       '</div>' + gauge(r) + '</div>' +
       '<div class="money"><span class="big"><span class="cur">' + esc(it.currency) + '</span>' + money(shown) + '</span>' +
       '<span class="sub">' + esc(sub.join(" · ")) + '</span>' +
       refPrice(r, shown) + vsEstimate(r, shown) +
-      '<button class="seen" data-seen="' + esc(r.key) + '">' +
-        (tab === "hits" ? "Dismiss" : (r.seen ? "Mark unseen" : "Mark seen")) + '</button>' +
+      '<div class="rowacts">' +
+        '<button class="seen" data-seen="' + esc(r.key) + '">' +
+          (r.seen ? "Mark unseen" : "Mark seen") + '</button>' +
+        (isDismissed(r.item, r.key)
+          ? '<button class="seen undo" data-undismiss="' + esc(r.key) + '">Undismiss</button>'
+          : '<button class="seen drop" data-dismiss="' + esc(r.key) + '">Dismiss</button>') +
+      '</div>' +
       '</div></article>';
   }).join("");
 }
@@ -3363,6 +3469,24 @@ $("results").onclick = function(ev){
     renderResults();
     return;
   }
+  var star = ev.target.closest("button[data-watchseller]");
+  if (star){
+    var who = star.getAttribute("data-watchseller");
+    if (isWatchedSeller(who)){
+      var n = unwatchSeller(who);
+      save(); render();
+      toast(n ? ("No longer watching " + who) : "");
+    } else {
+      var res = watchSeller(who);
+      save(); render();
+      toast(res.already
+        ? ("Already watching " + who)
+        : "Watching " + who + (res.created
+            ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch"
+            : " \u2014 added to \"" + res.watch.label + "\""));
+    }
+    return;
+  }
   var blk = ev.target.closest("button[data-block]");
   if (blk){
     var who = blk.getAttribute("data-block");
@@ -3371,21 +3495,35 @@ $("results").onclick = function(ev){
     toast("Blocked " + who + (dropped ? " \u2014 removed " + dropped + " listing" + (dropped === 1 ? "" : "s") : ""));
     return;
   }
+  var dis = ev.target.closest("button[data-dismiss]");
+  var und = ev.target.closest("button[data-undismiss]");
   var b = ev.target.closest("button[data-seen]");
-  if (!b) return;
-  var key = b.getAttribute("data-seen");
+  if (!dis && !und && !b) return;
+
+  var key = (dis || und || b).getAttribute(dis ? "data-dismiss" : und ? "data-undismiss" : "data-seen");
   var r = S.results.filter(function(x){ return x.key === key; })[0];
   if (!r) return;
-  r.seen = !r.seen;
-  // Record the dismissal outside the results array, so pruning the results
-  // can never resurrect it. Un-marking lifts the block again.
-  if (r.seen) dismissKey(r.item, r.watchId); else undismissKey(r.item);
+
+  var leaving = false;
+  if (dis){
+    // Dismiss is the permanent one: hides it AND stops it returning on a scan.
+    r.seen = true;
+    dismissKey(r.item, r.watchId);
+    leaving = true;
+  } else if (und){
+    // Undismiss only lifts the permanent block; it stays marked seen.
+    undismissKey(r.item);
+  } else {
+    // Plain seen. Reversible, and deliberately does NOT dismiss — being done
+    // looking at something is not the same as never wanting to see it again.
+    r.seen = !r.seen;
+    leaving = r.seen && tab === "hits";
+  }
   save();
 
-  var row = b.closest("article");
-
-  if (tab === "hits" && r.seen){
-    // Fade it out first so the rows below do not jump under the cursor.
+  var row = (dis || und || b).closest("article");
+  if (leaving){
+    // Fade out first so the rows below do not jump under the cursor.
     if (row){
       row.className = "lot leaving";
       setTimeout(function(){ render(); }, 180);
@@ -3394,13 +3532,10 @@ $("results").onclick = function(ev){
     }
     $("hitCount").textContent = "(" + unseenInScope() + ")";
     renderWatches();
+    renderBell();
     return;
   }
-
-  b.textContent = r.seen ? "Mark unseen" : "Mark seen";
-  if (row) row.className = "lot" + (r.seen ? " done" : "");
-  renderWatches();
-  $("hitCount").textContent = "(" + unseenInScope() + ")";
+  render();
 };
 
 $("clearHitsBtn").onclick = function(){
@@ -3567,6 +3702,13 @@ $("bellBtn").onclick = function(ev){
 };
 $("bellPanel").onclick = function(ev){
   ev.stopPropagation();
+  var x = ev.target.closest("button[data-bellclear]");
+  if (x){
+    // Clears just this notification. The listing is untouched.
+    var one = S.results.filter(function(q){ return q.key === x.getAttribute("data-bellclear"); })[0];
+    if (one){ markBellRead(one); save(); renderBell(); renderResults(); }
+    return;
+  }
   var row = ev.target.closest("[data-bellkey]");
   if (!row) return;
   var r = S.results.filter(function(x){ return x.key === row.getAttribute("data-bellkey"); })[0];
@@ -3622,6 +3764,19 @@ $("typeFacet").onclick = function(ev){
   renderResults();
 };
 $("sellerFacet").onclick = function(ev){
+  var star = ev.target.closest("button[data-watchseller]");
+  if (star){
+    var who = star.getAttribute("data-watchseller");
+    if (isWatchedSeller(who)){
+      unwatchSeller(who); save(); render();
+      toast("No longer watching " + who);
+    } else {
+      var res = watchSeller(who); save(); render();
+      toast("Watching " + who + (res.created
+        ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch" : ""));
+    }
+    return;
+  }
   if (ev.target.id === "sellerMoreBtn"){
     facet.sellersOpen = !facet.sellersOpen; renderResults(); return;
   }
@@ -3708,6 +3863,19 @@ $("blockList").onclick = function(ev){
   unblockSeller(who);
   render();
   toast("Unblocked " + who + " \u2014 their listings return on the next scan");
+};
+
+$("watchAddBtn").onclick = function(){
+  var who = $("fBlockAdd").value.trim();
+  if (!who){ toast("Type a seller username first"); return; }
+  if (isWatchedSeller(who)){ toast("Already watching " + who); return; }
+  var res = watchSeller(who);
+  $("fBlockAdd").value = "";
+  selected = res.watch.id;
+  save(); render();
+  toast("Watching " + who + (res.created
+    ? " \u2014 created a \"" + SELLER_WATCH_LABEL + "\" watch"
+    : " \u2014 added to \"" + res.watch.label + "\""));
 };
 
 $("blockAddBtn").onclick = function(){
