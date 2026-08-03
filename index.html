@@ -183,6 +183,11 @@ input,select,textarea{
   font-size:13px;line-height:1;font-family:var(--sans);
 }
 .blockbtn:hover{color:var(--strike)}
+.sellerbtn{
+  border:none;background:none;padding:0;cursor:pointer;color:inherit;
+  font:inherit;letter-spacing:inherit;text-transform:inherit;
+}
+.sellerbtn:hover{color:var(--patina);text-decoration:underline}
 .btn.ghost.move{padding:2px 5px;font-family:var(--mono);line-height:1}
 .blocklist{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .blockchip{
@@ -207,6 +212,8 @@ input,select,textarea{
 .chip .n{color:var(--muted);margin-left:4px}
 .chip.on .n{color:#cfe3dc}
 .chip.bc{border-style:dashed}
+.chip.empty{opacity:.45;border-style:dashed}
+.chip.empty:hover{opacity:.75}
 .pager{
   display:flex;gap:4px;align-items:center;flex-wrap:wrap;
   margin-top:16px;padding-top:12px;border-top:1px solid var(--rule-soft);
@@ -545,6 +552,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       </div>
       <div id="yearFacet"></div>
       <div id="metalFacet"></div>
+      <div id="sellerFacet"></div>
     </div>
 
     <div id="results"></div>
@@ -2444,7 +2452,8 @@ function renderViewing(){
 }
 
 /* Facet state: a free-text query plus the year and metal chips that are on. */
-var facet = { text:"", years:{}, metals:{}, yearsOpen:false, type:"all" };
+var facet = { text:"", years:{}, metals:{}, sellers:{}, yearsOpen:false,
+              sellersOpen:false, type:"all" };
 
 /* The listing-type view. Strict in both directions: a listing that offers both
    a fixed price AND bidding is neither a pure Buy It Now nor a pure auction, so
@@ -2456,7 +2465,8 @@ function typeOk(item){
 }
 function facetActive(){
   return !!facet.text || Object.keys(facet.years).length ||
-         Object.keys(facet.metals).length || facet.type !== "all";
+         Object.keys(facet.metals).length || Object.keys(facet.sellers).length ||
+         facet.type !== "all";
 }
 
 /* Cache the derived years/metals on the result so a long list is not re-parsed
@@ -2486,6 +2496,11 @@ function passesFacets(r){
   if (mts.length){
     var mhit = mts.some(function(m){ return fx.metals.indexOf(m) >= 0; });
     if (!mhit) return false;
+  }
+  var sel = Object.keys(facet.sellers);
+  if (sel.length){
+    var who = String((r.item && r.item.seller) || "").toLowerCase();
+    if (sel.indexOf(who) < 0) return false;
   }
   return true;
 }
@@ -2549,6 +2564,50 @@ function renderFacets(){
           '" data-metal="' + esc(m) + '">' + esc(metalLabel(m)) +
           '<span class="n">' + mc[m] + '</span></button>';
       }).join("") + '</div>'
+    : "";
+
+  /* Sellers seen in the current pool, plus any the selected watch is watching
+     that have nothing right now — a zero-count chip distinguishes "this seller
+     has no listings" from "you are not watching them". */
+  var sc = {}, disp = {};
+  pool.forEach(function(r){
+    var who = (r.item && r.item.seller) || "";
+    if (!who || isBlocked(who)) return;
+    var k = who.toLowerCase();
+    sc[k] = (sc[k] || 0) + 1;
+    if (!disp[k]) disp[k] = who;
+  });
+  if (selected && selected !== ALL){
+    var w = S.watches.filter(function(x){ return x.id === selected; })[0];
+    if (w) watchSellers(w).forEach(function(who){
+      // A blocked seller must not be offered, even if the watch still lists
+      // them — the block wins, and showing them would just confuse.
+      if (isBlocked(who)) return;
+      var k = who.toLowerCase();
+      if (sc[k] == null){ sc[k] = 0; disp[k] = who; }
+    });
+  }
+  var sellerKeys = Object.keys(sc).sort(function(a,b){
+    if (sc[b] !== sc[a]) return sc[b] - sc[a];
+    return a < b ? -1 : 1;
+  });
+  var SLIMIT = 20;
+  var sShown = facet.sellersOpen ? sellerKeys : sellerKeys.slice(0, SLIMIT);
+  $("sellerFacet").innerHTML = sellerKeys.length > 1 || Object.keys(facet.sellers).length
+    ? '<div class="facetrow"><span class="lab">Seller</span>' +
+      '<button class="chip' + (Object.keys(facet.sellers).length ? "" : " on") +
+        '" data-seller="__all__">All<span class="n">' + pool.length + '</span></button>' +
+      sShown.map(function(k){
+        return '<button class="chip' + (facet.sellers[k] ? " on" : "") +
+          (sc[k] === 0 ? " empty" : "") +
+          '" data-seller="' + esc(k) + '">' + esc(disp[k]) +
+          '<span class="n">' + sc[k] + '</span></button>';
+      }).join("") +
+      (sellerKeys.length > SLIMIT
+        ? '<button class="facetmore" id="sellerMoreBtn">' +
+          (facet.sellersOpen ? "show fewer" : "+" + (sellerKeys.length - SLIMIT) + " more") + "</button>"
+        : "") +
+      '</div>'
     : "";
 
   $("clearFacetsBtn").style.display = facetActive() ? "" : "none";
@@ -2700,8 +2759,10 @@ function renderResults(){
         (it.condition ? '<span class="tag">' + esc(it.condition) + '</span>' : "") +
         '<span class="tag">' + esc(r.watchLabel) + '</span>' +
         (it.seller
-          ? '<span class="tag seller">' + esc(it.seller) +
-            (it.feedback ? " " + esc(it.feedback) + "%" : "") +
+          ? '<span class="tag seller">' +
+            '<button class="sellerbtn" data-onlyseller="' + esc(it.seller) +
+              '" title="Show only this seller">' + esc(it.seller) +
+              (it.feedback ? " " + esc(it.feedback) + "%" : "") + '</button>' +
             '<button class="blockbtn" data-block="' + esc(it.seller) + '" title="Block this seller">\u00d7</button></span>'
           : "") +
       '</div>' + gauge(r) + '</div>' +
@@ -3116,6 +3177,16 @@ $("viewing").onclick = function(ev){
 };
 
 $("results").onclick = function(ev){
+  var only = ev.target.closest("button[data-onlyseller]");
+  if (only){
+    // Clicking a seller name narrows to just them; clicking again clears it.
+    var k = String(only.getAttribute("data-onlyseller")).toLowerCase();
+    if (facet.sellers[k] && Object.keys(facet.sellers).length === 1) facet.sellers = {};
+    else facet.sellers = (function(){ var o = {}; o[k] = 1; return o; })();
+    page = 0;
+    renderResults();
+    return;
+  }
   var blk = ev.target.closest("button[data-block]");
   if (blk){
     var who = blk.getAttribute("data-block");
@@ -3327,6 +3398,21 @@ $("typeFacet").onclick = function(ev){
   page = 0;
   renderResults();
 };
+$("sellerFacet").onclick = function(ev){
+  if (ev.target.id === "sellerMoreBtn"){
+    facet.sellersOpen = !facet.sellersOpen; renderResults(); return;
+  }
+  var b = ev.target.closest("button[data-seller]");
+  if (!b) return;
+  var k = b.getAttribute("data-seller");
+  // "All" clears the whole group rather than being a selectable value.
+  if (k === "__all__") facet.sellers = {};
+  else if (facet.sellers[k]) delete facet.sellers[k];
+  else facet.sellers[k] = 1;
+  page = 0;
+  renderResults();
+};
+
 $("metalFacet").onclick = function(ev){
   var b = ev.target.closest("button[data-metal]");
   if (!b) return;
@@ -3346,7 +3432,8 @@ $("fFind").oninput = function(){
   }, 180);
 };
 $("clearFacetsBtn").onclick = function(){
-  facet.text = ""; facet.years = {}; facet.metals = {}; facet.yearsOpen = false;
+  facet.text = ""; facet.years = {}; facet.metals = {}; facet.sellers = {};
+  facet.yearsOpen = false; facet.sellersOpen = false;
   facet.type = "all";
   page = 0;
   $("fFind").value = "";
