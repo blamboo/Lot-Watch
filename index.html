@@ -227,6 +227,7 @@ input,select,textarea{
 .tag.sample{border-color:var(--strike);color:var(--strike)}
 .tag.noship{border-color:var(--gold);color:var(--gold)}
 .tag.partial{border-color:var(--muted);color:var(--muted);font-style:italic}
+.tag.odd{border-color:var(--strike);color:var(--strike)}
 .tag.seller{display:inline-flex;align-items:center;gap:4px}
 .blockbtn{
   border:none;background:none;color:var(--muted);cursor:pointer;padding:0 0 0 2px;
@@ -268,6 +269,8 @@ input,select,textarea{
 .chip .n{color:var(--muted);margin-left:4px}
 .chip.on .n{color:#cfe3dc}
 .chip.bc{border-style:dashed}
+.chip.odd{border-color:var(--strike);color:var(--strike)}
+.chip.odd.on{background:var(--strike);border-color:var(--strike);color:#fff}
 .chip.empty{opacity:.45;border-style:dashed}
 .chipwrap{display:inline-flex;align-items:center;gap:2px}
 .chip.empty:hover{opacity:.75}
@@ -522,6 +525,9 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       </div>
       <div class="field">
         <label>Categories</label>
+        <label class="check" style="margin-bottom:6px">
+          <input type="checkbox" id="fAnyCat"> Search all of eBay &mdash; no category filter
+        </label>
         <div id="catBoxes" class="catgrid"></div>
         <div class="row" style="margin-top:6px">
           <input id="fCatExtra" placeholder="Other IDs, comma separated">
@@ -638,6 +644,7 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <div id="yearFacet"></div>
       <div id="metalFacet"></div>
       <div id="sellerFacet"></div>
+      <div id="catFacet"></div>
     </div>
 
     <div id="results"></div>
@@ -772,7 +779,7 @@ var DEFAULTS = {
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
   formatRecheck:false,
-  blocked:[], dismissed:{}, bellRead:{}, sellerMoved:{},
+  blocked:[], dismissed:{}, bellRead:{}, sellerMoved:{}, hideEnded:true,
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -990,6 +997,14 @@ function normalise(it){
     endTime: it.itemEndDate || "",
     // When the SELLER first put it up, as opposed to when this app noticed it.
     listed: it.itemCreationDate || "",
+    // The category eBay ACTUALLY filed it under (leaf, up to two: primary then
+    // secondary). Every listing has one — there is no such thing as "no
+    // category" on eBay — so this is how a coin filed somewhere odd is spotted.
+    cats: Array.isArray(it.categories)
+      ? it.categories.map(function(c){
+          return { id: String(c.categoryId || ""), name: String(c.categoryName || "") };
+        }).filter(function(c){ return c.id; })
+      : [],
     condition: it.condition || "",
     seller: (it.seller && it.seller.username) || "",
     feedback: (it.seller && it.seller.feedbackPercentage) || "",
@@ -1046,6 +1061,14 @@ function splitList(s){
     .map(function(x){ return x.trim(); })
     .filter(function(x, i, a){ return x.length && a.indexOf(x) === i; });
 }
+/* An explicit "no category filter" — distinct from an unset list, which still
+   defaults to Coins & Paper Money. This is how a coin filed under Collectibles
+   or Everything Else gets found at all. */
+var ANY_CAT = "__any__";
+function isAnyCat(w){
+  return !!(w && w.cats && w.cats.length === 1 && w.cats[0] === ANY_CAT);
+}
+
 function watchCats(w){
   if (w && w.cats && w.cats.length) return w.cats.map(String);
   // Legacy shape, or a backup imported after the load-time migration ran.
@@ -1186,7 +1209,8 @@ function buildParams(w, tier, phrase, cat){
   if (q) p.set("q", q);
   // eBay accepts only one category per request, so the caller loops.
   var c = cat != null ? cat : (w.cats && w.cats[0]) || w.categoryId;
-  if (c) p.set("category_ids", String(c));
+  // ANY_CAT means send no category at all, so eBay searches everything.
+  if (c && c !== ANY_CAT) p.set("category_ids", String(c));
   p.set("filter", f.join(","));
   // EXTENDED adds shortDescription (condition + item aspects) at no extra call.
   p.set("fieldgroups", "EXTENDED");
@@ -1274,6 +1298,16 @@ function readErr(j){
 var DEMO_WORDS = ["Uncirculated","Toned","Original","Album","Estate","Lot of 3","Certified","Raw","Choice","Problem-free"];
 /* Demo titles carry realistic years and metals so the year and metal lists are
    visible without a live connection. */
+/* A couple of these sit OUTSIDE the coin tree on purpose, so the "filed
+   somewhere odd" case is visible without a live connection. */
+var DEMO_CATS = [
+  { id:"253",   name:"Coins: US" },
+  { id:"256",   name:"Coins: World" },
+  { id:"4733",  name:"Coins: Ancient" },
+  { id:"1",     name:"Collectibles" },
+  { id:"99",    name:"Everything Else" },
+  { id:"20094", name:"Antiques" }
+];
 var DEMO_YEARS = ["1564","1982","1326","100 B.C.","1328-1350","1916-D","AD 117","270-200 BC","1861","2001"];
 var DEMO_METAL = ["Silver","Gold","AE Bronze","Copper","Billon","AR Denarius","Base metal","Nickel"];
 function fetchDemo(w){
@@ -1302,6 +1336,7 @@ function fetchDemo(w){
       price: price,
       currency: S.currency,
       listed: new Date(Date.now() - Math.random()*5*86400000).toISOString(),
+      cats: [ DEMO_CATS[Math.floor(Math.random()*DEMO_CATS.length)] ],
       shipping: Math.random() < 0.2 ? null : Math.round(Math.random()*1800)/100,
       shipKnown: true,
       total: null,
@@ -2109,6 +2144,51 @@ function yearOk(w, item){
   return w.yearMode === "all" ? years.every(inRange) : years.some(inRange);
 }
 
+/* ---------------- sold / ended listings ---------------- */
+/* eBay's search only ever returns ACTIVE listings, so a sold item can only
+   reach the screen from this app's own stored history. Two ways to spot one:
+   its end date has passed, or it stopped coming back in scans. */
+
+function hasEnded(item){
+  if (!item) return false;
+  if (item.gone) return true;                 // vanished from scans
+  var iso = item.endTime;
+  if (!iso) return false;                     // no end date (often a GTC listing)
+  var t = new Date(iso).getTime();
+  if (isNaN(t)) return false;
+  return t <= Date.now();
+}
+
+/* Mark stored listings for this watch that the scan did NOT return.
+   GUARD: only trust this when the scan came back with fewer items than the page
+   limit, which means we saw the whole result set. On a truncated page the
+   missing items are simply on page two, not sold — counting those as sold
+   would quietly delete half a big seller's inventory. */
+var SCAN_PAGE_LIMIT = 200;
+var GONE_AFTER_MISSES = 2;
+
+function markMissing(w, items, complete){
+  if (!complete) return 0;
+  var here = {};
+  items.forEach(function(x){ if (x && x.id) here[x.id] = 1; });
+  var gone = 0;
+  S.results.forEach(function(r){
+    if (r.watchId !== w.id || !r.item) return;
+    if (r.item.gone) return;
+    if (here[r.item.id]){ r.item.misses = 0; return; }
+    // Only count a miss for something this watch would still match; a listing
+    // excluded by a filter change is absent for a different reason.
+    if (!matches(w, r.item)) return;
+    r.item.misses = (r.item.misses || 0) + 1;
+    if (r.item.misses >= GONE_AFTER_MISSES){
+      r.item.gone = true;
+      r.item.goneAt = Date.now();
+      gone++;
+    }
+  });
+  return gone;
+}
+
 function priceOf(w, r){ return w.basis === "total" ? r.total : r.price; }
 
 function matches(w, r){
@@ -2172,6 +2252,8 @@ function sanitizeWatch(raw){
   else if (raw.categoryId) cats = [raw.categoryId];
   cats = cats.map(function(x){ return String(x || "").trim(); })
     .filter(function(x, i, a){ return x.length && a.indexOf(x) === i; });
+  // ANY_CAT is a non-empty string, so an explicit search-everywhere survives
+  // the filter above; only a genuinely empty list falls back to the default.
   if (!cats.length) cats = ["11116"];
 
   var MODES = ["smart","all","any"];
@@ -2396,8 +2478,13 @@ function runWatch(w){
   return searchLadder(w).then(function(items){
     w.lastRun = Date.now();
     w.lastError = "";
+    // Anything this watch stored that the scan did not return has probably
+    // sold. Only trusted when the page was not truncated — see markMissing.
+    markMissing(w, items, items.length < SCAN_PAGE_LIMIT);
     var fresh = 0;
     items.forEach(function(r){
+      // A listing that reappears is plainly still live.
+      r.misses = 0;
       if (!matches(w, r)) return;
       var key = w.id + "|" + r.id;
       if (isDismissed(r, key)) return;         // dismissed for good
@@ -2541,7 +2628,7 @@ function renderWatches(){
     var np = watchPhrases(w).filter(function(x){ return x.length; }).length;
     var nc = watchCats(w).length, ns = watchSellers(w).length;
     var scope = (np ? np + (np === 1 ? " phrase, " : " phrases, ") : "") +
-                nc + (nc === 1 ? " cat" : " cats") +
+                (isAnyCat(w) ? "all categories" : nc + (nc === 1 ? " cat" : " cats")) +
                 (ns ? ", " + ns + (ns === 1 ? " seller" : " sellers") : "");
     var last = w.lastRun ? new Date(w.lastRun).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "never";
     return '<div class="watch' + (selected === w.id ? " sel" : "") + (w.active === false ? " off" : "") +
@@ -2793,8 +2880,8 @@ function renderViewing(){
 }
 
 /* Facet state: a free-text query plus the year and metal chips that are on. */
-var facet = { text:"", years:{}, metals:{}, sellers:{}, yearsOpen:false,
-              sellersOpen:false, type:"all" };
+var facet = { text:"", years:{}, metals:{}, sellers:{}, cats:{}, yearsOpen:false,
+              sellersOpen:false, catsOpen:false, type:"all" };
 
 /* The listing-type view. Strict in both directions: a listing that offers both
    a fixed price AND bidding is neither a pure Buy It Now nor a pure auction, so
@@ -2807,7 +2894,7 @@ function typeOk(item){
 function facetActive(){
   return !!facet.text || Object.keys(facet.years).length ||
          Object.keys(facet.metals).length || Object.keys(facet.sellers).length ||
-         facet.type !== "all";
+         Object.keys(facet.cats).length || facet.type !== "all";
 }
 
 /* Cache the derived years/metals on the result so a long list is not re-parsed
@@ -2843,11 +2930,34 @@ function passesFacets(r){
     var who = String((r.item && r.item.seller) || "").toLowerCase();
     if (sel.indexOf(who) < 0) return false;
   }
+  var fc = Object.keys(facet.cats);
+  if (fc.length){
+    var ids = itemCatIds(r.item);
+    if (!ids.length) return fc.indexOf("__none__") >= 0;
+    var hit = ids.some(function(id){ return fc.indexOf(id) >= 0; });
+    if (!hit) return false;
+  }
   return true;
 }
 
 /* Build the chip lists from whatever is currently in scope, so counts always
    describe what you can actually see. */
+/* The leaf category ids eBay assigned to a listing. */
+function itemCatIds(item){
+  var c = (item && item.cats) || [];
+  return c.map(function(x){ return String(x.id || ""); }).filter(Boolean);
+}
+function itemCatName(item, id){
+  var c = (item && item.cats) || [];
+  for (var i=0;i<c.length;i++) if (String(c[i].id) === String(id)) return c[i].name;
+  return "";
+}
+/* Is this one of the numismatic categories, or somewhere unexpected? */
+function isExpectedCat(id){
+  if (id === "__none__") return false;
+  return CAT_PRESETS.some(function(c){ return c.id === String(id); });
+}
+
 function renderFacets(){
   var pool = inScope();
   if (tab === "hits") pool = pool.filter(function(r){ return !r.seen; });
@@ -2951,6 +3061,40 @@ function renderFacets(){
       (sellerKeys.length > SLIMIT
         ? '<button class="facetmore" id="sellerMoreBtn">' +
           (facet.sellersOpen ? "show fewer" : "+" + (sellerKeys.length - SLIMIT) + " more") + "</button>"
+        : "") +
+      '</div>'
+    : "";
+
+  /* Where eBay actually filed each listing. A coin sitting in Collectibles or
+     Everything Else shows up here, which is the whole point. */
+  var cc = {}, cname = {};
+  pool.forEach(function(r){
+    var ids = itemCatIds(r.item);
+    if (!ids.length){ cc["__none__"] = (cc["__none__"] || 0) + 1; cname["__none__"] = "Not stated"; return; }
+    ids.forEach(function(id){
+      cc[id] = (cc[id] || 0) + 1;
+      if (!cname[id]) cname[id] = itemCatName(r.item, id) || catName(id);
+    });
+  });
+  var catKeys = Object.keys(cc).sort(function(a,b){
+    if (cc[b] !== cc[a]) return cc[b] - cc[a];
+    return cname[a] < cname[b] ? -1 : 1;
+  });
+  var CLIMIT = 16;
+  var cShown = facet.catsOpen ? catKeys : catKeys.slice(0, CLIMIT);
+  $("catFacet").innerHTML = (catKeys.length > 1 || Object.keys(facet.cats).length)
+    ? '<div class="facetrow"><span class="lab">Category</span>' +
+      cShown.map(function(id){
+        var expected = isExpectedCat(id);
+        return '<button class="chip' + (facet.cats[id] ? " on" : "") +
+          (expected ? "" : " odd") +
+          '" data-cat="' + esc(id) + '" title="' +
+          (expected ? "" : "Outside your coin categories") + '">' +
+          esc(cname[id]) + '<span class="n">' + cc[id] + '</span></button>';
+      }).join("") +
+      (catKeys.length > CLIMIT
+        ? '<button class="facetmore" id="catMoreBtn">' +
+          (facet.catsOpen ? "show fewer" : "+" + (catKeys.length - CLIMIT) + " more") + "</button>"
         : "") +
       '</div>'
     : "";
@@ -3116,6 +3260,10 @@ function renderResults(){
           : (auction ? '<span class="tag auction">Auction</span>' : "") +
             (bin ? '<span class="tag bin">Buy It Now</span>' : "")) +
         (it.condition ? '<span class="tag">' + esc(it.condition) + '</span>' : "") +
+        (itemCatIds(it).length
+          ? '<span class="tag' + (isExpectedCat(itemCatIds(it)[0]) ? "" : " odd") + '">' +
+            esc(itemCatName(it, itemCatIds(it)[0]) || catName(itemCatIds(it)[0])) + '</span>'
+          : "") +
         '<span class="tag">' + esc(r.watchLabel) + '</span>' +
         (it.seller
           ? '<span class="tag seller">' +
@@ -3181,7 +3329,9 @@ function openEditor(w){
   $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
   $("fEvery").value = w ? String(w.every) : "30";
-  renderCatBoxes(w ? watchCats(w) : ["11116"]);
+  $("fAnyCat").checked = isAnyCat(w);
+  renderCatBoxes(isAnyCat(w) ? [] : (w ? watchCats(w) : ["11116"]));
+  syncAnyCat();
   $("fCatExtra").value = "";
   $("fCountry").value = w ? (w.country || "") : "";
   $("editor").style.display = "block";
@@ -3193,6 +3343,39 @@ function openEditor(w){
   $("fLabel").focus();
 }
 function closeEditor(){ $("editor").style.display = "none"; editingId = null; }
+
+/* Ticking "all of eBay" makes the category boxes meaningless, so grey them out
+   rather than letting both be set and leaving it ambiguous which wins. */
+function syncAnyCat(){
+  var on = $("fAnyCat").checked;
+  var boxes = document.querySelectorAll(".catbox");
+  for (var i=0;i<boxes.length;i++) boxes[i].disabled = on;
+  $("fCatExtra").disabled = on;
+  $("catFindBtn").disabled = on;
+  $("catBoxes").style.opacity = on ? ".4" : "";
+}
+$("fAnyCat").onchange = function(){
+  syncAnyCat();
+  updateBudgetHint();
+  checkAnyCatSetup();
+};
+
+/* eBay needs a keyword when no category is given, so a seller-only watch
+   cannot also drop the category. */
+function checkAnyCatSetup(){
+  if (!$("fAnyCat").checked){ return; }
+  var phrases = splitList($("fQ").value.replace(/,/g, "\n"));
+  var el = $("catHint");
+  if (!phrases.length){
+    el.textContent = "Searching all of eBay needs at least one search phrase — " +
+      "eBay will not accept a search with neither keywords nor a category.";
+    el.style.color = "var(--strike)";
+  } else {
+    el.textContent = "One search across every eBay category. Expect more noise; " +
+      "the Category row under the results shows where things actually landed.";
+    el.style.color = "";
+  }
+}
 
 /* Categories the editor is currently offering: the verified presets, plus any
    the user typed or eBay suggested, so a custom ID gets a tick box too. */
@@ -3373,9 +3556,14 @@ $("fEvery").onchange = updateBudgetHint;
 function saveWatch(){
   var phrases = splitList($("fQ").value.replace(/,/g, "\n"));
   var sellers = splitList($("fSellers").value.replace(/,/g, "\n"));
-  var cats = chosenCats().concat(splitList($("fCatExtra").value))
-    .filter(function(x, i, a){ return a.indexOf(x) === i; });
-  if (!cats.length) cats = ["11116"];
+  var cats;
+  if ($("fAnyCat").checked){
+    cats = [ANY_CAT];
+  } else {
+    cats = chosenCats().concat(splitList($("fCatExtra").value))
+      .filter(function(x, i, a){ return a.indexOf(x) === i; });
+    if (!cats.length) cats = ["11116"];
+  }
   var label = $("fLabel").value.trim() || phrases[0] ||
     (sellers.length ? sellers.slice(0,2).join(", ") + (sellers.length > 2 ? " +" + (sellers.length-2) : "") : "");
   if (!phrases.length && !sellers.length){
@@ -3919,6 +4107,16 @@ $("sellerFacet").onclick = function(ev){
   renderResults();
 };
 
+$("catFacet").onclick = function(ev){
+  if (ev.target.id === "catMoreBtn"){ facet.catsOpen = !facet.catsOpen; renderResults(); return; }
+  var b = ev.target.closest("button[data-cat]");
+  if (!b) return;
+  var id = b.getAttribute("data-cat");
+  if (facet.cats[id]) delete facet.cats[id]; else facet.cats[id] = 1;
+  page = 0;
+  renderResults();
+};
+
 $("metalFacet").onclick = function(ev){
   var b = ev.target.closest("button[data-metal]");
   if (!b) return;
@@ -3939,7 +4137,8 @@ $("fFind").oninput = function(){
 };
 $("clearFacetsBtn").onclick = function(){
   facet.text = ""; facet.years = {}; facet.metals = {}; facet.sellers = {};
-  facet.yearsOpen = false; facet.sellersOpen = false;
+  facet.cats = {};
+  facet.yearsOpen = false; facet.sellersOpen = false; facet.catsOpen = false;
   facet.type = "all";
   page = 0;
   $("fFind").value = "";
