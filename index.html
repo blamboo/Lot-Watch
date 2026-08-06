@@ -492,16 +492,6 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <p class="hint" id="yearHint" style="margin:-4px 0 9px"></p>
       <div class="row field">
         <div>
-          <label for="fFormat">Listing type</label>
-          <select id="fFormat">
-            <option value="both">Both</option>
-            <option value="FIXED_PRICE">Buy It Now (incl. auctions with BIN)</option>
-            <option value="AUCTION">Auction (incl. auctions with BIN)</option>
-            <option value="BIN_ONLY">Buy It Now only — no auction</option>
-            <option value="AUCTION_ONLY">Auction only — no BIN</option>
-          </select>
-        </div>
-        <div>
           <label for="fCond">Condition</label>
           <select id="fCond">
             <option value="">Any</option>
@@ -645,6 +635,16 @@ ol.steps code{font-family:var(--mono);font-size:12px;background:var(--ground);pa
       <div id="metalFacet"></div>
       <div id="sellerFacet"></div>
       <div id="catFacet"></div>
+      <div id="priceFacet"></div>
+      <div class="facetrow" id="priceRangeRow">
+        <span class="lab">Price</span>
+        <input id="fPriceMin" type="number" min="0" step="0.01" placeholder="min"
+               style="width:80px;flex:0 0 auto">
+        <span class="gap">to</span>
+        <input id="fPriceMax" type="number" min="0" step="0.01" placeholder="max"
+               style="width:80px;flex:0 0 auto">
+        <button class="facetmore" id="priceClearBtn">clear</button>
+      </div>
     </div>
 
     <div id="results"></div>
@@ -779,7 +779,7 @@ var DEFAULTS = {
   watches:[], results:[], calls:0, callDay:"",
   nKey:"", nUser:"", nToken:"", nGrade:"vf", shipDefaultFlipped:false, catsFound:{},
   formatRecheck:false,
-  blocked:[], dismissed:{}, bellRead:{}, sellerMoved:{}, hideEnded:true,
+  blocked:[], dismissed:{}, bellRead:{}, sellerMoved:{}, formatUnified:false, hideEnded:true,
   useSold:true, soldDenied:false,
   nPrices:{}, nCalls:0, nCallMonth:""
 };
@@ -840,6 +840,14 @@ S.watches.forEach(function(w){
    should not have qualified, so it is safe to apply silently. */
 /* Resolve any overlap left by an earlier version or a hand-edited watch. */
 syncSellerHome();
+
+/* The per-watch listing-type setting is gone; the view-level Type row replaces
+   it. Widen every existing watch to "both" — this can only REVEAL listings, so
+   it is safe to apply silently. */
+if (!S.formatUnified){
+  S.watches.forEach(function(w){ w.format = "both"; });
+  S.formatUnified = true;
+}
 
 if (!S.formatRecheck){
   S.results = S.results.filter(function(r){
@@ -2616,9 +2624,7 @@ function renderWatches(){
     var unseen = S.results.filter(function(r){ return r.watchId === w.id && !r.seen; }).length;
     var max = num(w.max,0);
     var band = S.currency + " " + money(num(w.min,0)) + " – " + (max > 0 ? money(max) : "any");
-    var FMT_LABEL = { both:"BIN + auction", AUCTION:"Auction", FIXED_PRICE:"Buy It Now",
-                     AUCTION_ONLY:"Auction only", BIN_ONLY:"BIN only" };
-    var fmt = FMT_LABEL[w.format] || "BIN + auction";
+
     var shipNote = w.basis === "total" ? "delivered" : "item only";
     if (num(w.maxShip,0) > 0) shipNote += ", ship \u2264 " + money(w.maxShip);
     if (w.yearFrom != null || w.yearTo != null){
@@ -2635,7 +2641,7 @@ function renderWatches(){
       '" data-watch="' + w.id + '">' +
       '<h3>' + esc(w.label) + '<span class="count' + (unseen ? "" : " zero") + '">' + unseen + '</span></h3>' +
       '<div class="band">' + esc(band) + '</div>' +
-      '<div class="meta"><span>' + fmt + '</span><span>' + esc(shipNote) + '</span><span>' + esc(scope) + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
+      '<div class="meta"><span>' + esc(shipNote) + '</span><span>' + esc(scope) + '</span><span>every ' + w.every + 'm</span><span>checked ' + last + '</span></div>' +
       estLine(w) +
       (w.lastError ? '<div class="err">' + esc(w.lastError) + '</div>' : "") +
       '<div class="row" style="margin-top:6px">' +
@@ -2881,7 +2887,48 @@ function renderViewing(){
 
 /* Facet state: a free-text query plus the year and metal chips that are on. */
 var facet = { text:"", years:{}, metals:{}, sellers:{}, cats:{}, yearsOpen:false,
-              sellersOpen:false, catsOpen:false, type:"all" };
+              sellersOpen:false, catsOpen:false, type:"all",
+              band:"all", pmin:null, pmax:null };
+
+/* The figure a listing is judged on in the VIEW — delivered when known, else
+   the item price. Same rule the list already sorts and gauges by. */
+function viewPrice(r){
+  if (!r || !r.item) return null;
+  if (r.basis === "total" && r.item.total != null) return r.item.total;
+  return r.item.price;
+}
+
+/* Thirds of whatever is currently in view, computed from the actual spread
+   rather than fixed money bands — "middle" means middle of THIS pool, which is
+   what makes it useful across a £5 token watch and a £900 gold watch alike. */
+function priceBands(pool){
+  var vals = pool.map(viewPrice).filter(function(v){ return v != null && !isNaN(v); })
+    .sort(function(a,b){ return a - b; });
+  if (vals.length < 3) return null;
+  var lo = vals[Math.floor(vals.length / 3)];
+  var hi = vals[Math.floor(vals.length * 2 / 3)];
+  if (!(hi > lo)) return null;          // too flat to split meaningfully
+  return { lo: lo, hi: hi, min: vals[0], max: vals[vals.length - 1] };
+}
+
+function bandOk(r, bands){
+  if (facet.band === "all" || !bands) return true;
+  var v = viewPrice(r);
+  if (v == null) return false;
+  if (facet.band === "low") return v < bands.lo;
+  if (facet.band === "mid") return v >= bands.lo && v < bands.hi;
+  if (facet.band === "high") return v >= bands.hi;
+  return true;
+}
+
+function priceRangeOk(r){
+  if (facet.pmin == null && facet.pmax == null) return true;
+  var v = viewPrice(r);
+  if (v == null) return false;
+  if (facet.pmin != null && v < facet.pmin) return false;
+  if (facet.pmax != null && v > facet.pmax) return false;
+  return true;
+}
 
 /* The listing-type view. Strict in both directions: a listing that offers both
    a fixed price AND bidding is neither a pure Buy It Now nor a pure auction, so
@@ -2894,7 +2941,8 @@ function typeOk(item){
 function facetActive(){
   return !!facet.text || Object.keys(facet.years).length ||
          Object.keys(facet.metals).length || Object.keys(facet.sellers).length ||
-         Object.keys(facet.cats).length || facet.type !== "all";
+         Object.keys(facet.cats).length || facet.type !== "all" ||
+         facet.band !== "all" || facet.pmin != null || facet.pmax != null;
 }
 
 /* Cache the derived years/metals on the result so a long list is not re-parsed
@@ -2930,6 +2978,8 @@ function passesFacets(r){
     var who = String((r.item && r.item.seller) || "").toLowerCase();
     if (sel.indexOf(who) < 0) return false;
   }
+  if (!priceRangeOk(r)) return false;
+  if (!bandOk(r, facetBands)) return false;
   var fc = Object.keys(facet.cats);
   if (fc.length){
     var ids = itemCatIds(r.item);
@@ -2957,6 +3007,8 @@ function isExpectedCat(id){
   if (id === "__none__") return false;
   return CAT_PRESETS.some(function(c){ return c.id === String(id); });
 }
+
+var facetBands = null;
 
 function renderFacets(){
   var pool = inScope();
@@ -3084,6 +3136,8 @@ function renderFacets(){
   var cShown = facet.catsOpen ? catKeys : catKeys.slice(0, CLIMIT);
   $("catFacet").innerHTML = (catKeys.length > 1 || Object.keys(facet.cats).length)
     ? '<div class="facetrow"><span class="lab">Category</span>' +
+      '<button class="chip' + (Object.keys(facet.cats).length ? "" : " on") +
+        '" data-cat="__all__">All<span class="n">' + pool.length + '</span></button>' +
       cShown.map(function(id){
         var expected = isExpectedCat(id);
         return '<button class="chip' + (facet.cats[id] ? " on" : "") +
@@ -3098,6 +3152,39 @@ function renderFacets(){
         : "") +
       '</div>'
     : "";
+
+  /* Price bands, from the pool BEFORE any price filtering — otherwise choosing
+     "middle" would recompute the thirds of the middle and the chips would
+     wander every click. */
+  facetBands = priceBands(pool);
+  if (facetBands){
+    var bandCount = {};
+    ["low","mid","high"].forEach(function(b){
+      var save = facet.band; facet.band = b;
+      bandCount[b] = pool.filter(function(r){ return bandOk(r, facetBands); }).length;
+      facet.band = save;
+    });
+    var m = function(v){ return S.currency + " " + money(v); };
+    $("priceFacet").innerHTML =
+      '<div class="facetrow"><span class="lab">Band</span>' +
+      '<button class="chip' + (facet.band === "all" ? " on" : "") +
+        '" data-band="all">All<span class="n">' + pool.length + '</span></button>' +
+      '<button class="chip' + (facet.band === "low" ? " on" : "") +
+        '" data-band="low" title="Under ' + esc(m(facetBands.lo)) + '">Lower third' +
+        '<span class="n">' + bandCount.low + '</span></button>' +
+      '<button class="chip' + (facet.band === "mid" ? " on" : "") +
+        '" data-band="mid" title="' + esc(m(facetBands.lo)) + ' to ' + esc(m(facetBands.hi)) +
+        '">Middle<span class="n">' + bandCount.mid + '</span></button>' +
+      '<button class="chip' + (facet.band === "high" ? " on" : "") +
+        '" data-band="high" title="' + esc(m(facetBands.hi)) + ' and up">Top third' +
+        '<span class="n">' + bandCount.high + '</span></button>' +
+      '<span class="pinfo" style="margin-left:6px">' + esc(m(facetBands.lo)) +
+        ' \u00b7 ' + esc(m(facetBands.hi)) + '</span>' +
+      '</div>';
+  } else {
+    $("priceFacet").innerHTML = "";
+    if (facet.band !== "all") facet.band = "all";
+  }
 
   $("clearFacetsBtn").style.display = facetActive() ? "" : "none";
 }
@@ -3326,7 +3413,6 @@ function openEditor(w){
   $("fYearMode").value = (w && w.yearMode === "all") ? "all" : "any";
   $("fNoYear").value = (w && w.noYear === "skip") ? "skip" : "keep";
   $("fNeedShip").value = (w && w.needShip === true) ? "skip" : "keep";
-  $("fFormat").value = w ? w.format : "both";
   $("fCond").value = w ? (w.condition || "") : "";
   $("fEvery").value = w ? String(w.every) : "30";
   $("fAnyCat").checked = isAnyCat(w);
@@ -3585,7 +3671,10 @@ function saveWatch(){
     yearMode: $("fYearMode").value === "all" ? "all" : "any",
     noYear: $("fNoYear").value === "skip" ? "skip" : "keep",
     needShip: $("fNeedShip").value === "skip",
-    format: $("fFormat").value,
+    // Always fetch BOTH formats. Narrowing lives in the view-level Type row,
+    // which is enforced at render and cannot go stale — the per-watch version
+    // of this setting failed three times for exactly that reason.
+    format: "both",
     condition: $("fCond").value,
     every: parseInt($("fEvery").value, 10),
     cats: cats,
@@ -4107,12 +4196,44 @@ $("sellerFacet").onclick = function(ev){
   renderResults();
 };
 
+$("priceFacet").onclick = function(ev){
+  var b = ev.target.closest("button[data-band]");
+  if (!b) return;
+  var v = b.getAttribute("data-band");
+  // Bands are exclusive — picking "middle" means the middle, not middle-or-top.
+  facet.band = (facet.band === v) ? "all" : v;
+  page = 0;
+  renderResults();
+};
+
+var priceTimer = null;
+function readPriceRange(){
+  var lo = parseFloat($("fPriceMin").value);
+  var hi = parseFloat($("fPriceMax").value);
+  facet.pmin = isNaN(lo) ? null : lo;
+  facet.pmax = isNaN(hi) ? null : hi;
+  page = 0;
+  renderResults();
+}
+$("fPriceMin").oninput = function(){ clearTimeout(priceTimer); priceTimer = setTimeout(readPriceRange, 200); };
+$("fPriceMax").oninput = function(){ clearTimeout(priceTimer); priceTimer = setTimeout(readPriceRange, 200); };
+$("priceClearBtn").onclick = function(){
+  $("fPriceMin").value = ""; $("fPriceMax").value = "";
+  facet.pmin = null; facet.pmax = null;
+  facet.band = "all";
+  page = 0;
+  renderResults();
+};
+
 $("catFacet").onclick = function(ev){
   if (ev.target.id === "catMoreBtn"){ facet.catsOpen = !facet.catsOpen; renderResults(); return; }
   var b = ev.target.closest("button[data-cat]");
   if (!b) return;
   var id = b.getAttribute("data-cat");
-  if (facet.cats[id]) delete facet.cats[id]; else facet.cats[id] = 1;
+  // "All" clears the group rather than being a selectable value.
+  if (id === "__all__") facet.cats = {};
+  else if (facet.cats[id]) delete facet.cats[id];
+  else facet.cats[id] = 1;
   page = 0;
   renderResults();
 };
@@ -4138,6 +4259,8 @@ $("fFind").oninput = function(){
 $("clearFacetsBtn").onclick = function(){
   facet.text = ""; facet.years = {}; facet.metals = {}; facet.sellers = {};
   facet.cats = {};
+  facet.band = "all"; facet.pmin = null; facet.pmax = null;
+  $("fPriceMin").value = ""; $("fPriceMax").value = "";
   facet.yearsOpen = false; facet.sellersOpen = false; facet.catsOpen = false;
   facet.type = "all";
   page = 0;
